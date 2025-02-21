@@ -1,3 +1,19 @@
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.1.0)
+set(toolchainVersion 13_3_Rel1)
+set(picotoolVersion 2.1.0)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
+set(PICO_BOARD pico2 CACHE STRING "Board type")
+
 cmake_minimum_required(VERSION 3.22)
 include(pico_sdk_import.cmake)
 
@@ -12,19 +28,19 @@ option(HDMI "Enable HDMI display" OFF)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
 
-# 16384
-# 4096
-option(FLASH_SIZE "Target Flash Size" 2048)
+option(FLASH_SIZE "Target Flash Size" 4096)
 
 if(NOT FLASH_SIZE)
-set(FLASH_SIZE 2048)
+set(FLASH_SIZE 4096)
 endif ()
+
+set(FIRMWARE_OFFSET 64)
 
 if(NOT LAUNCHER_VERSION)
 set(LAUNCHER_VERSION 2)
 endif ()
 
-SET(BUILD_NAME "${PROJECT_NAME}-${FLASH_SIZE}K-${LAUNCHER_VERSION}")
+SET(BUILD_NAME "m1p2-${PROJECT_NAME}")
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -33,9 +49,6 @@ set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
-
-set(FAMILY rp2040)
-set(BOARD pico_sdk)
 
 add_subdirectory(drivers/ps2)
 add_subdirectory(drivers/fatfs)
@@ -143,16 +156,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
         NES_GPIO_LAT=15
 )
 
-
-pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
-math(EXPR CUSTOM_XIP_BASE "1024 * (${FLASH_SIZE} - 68) + 0x10000000")
-message(STATUS "${CUSTOM_XIP_BASE}")
-target_compile_definitions(slower_boot2 PRIVATE CUSTOM_XIP_BASE=${CUSTOM_XIP_BASE})
-target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
-pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
-
-
 target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
+target_compile_definitions(${PROJECT_NAME} PRIVATE FIRMWARE_OFFSET=${FIRMWARE_OFFSET})
 
 IF (TFT)
     target_link_libraries(${PROJECT_NAME} PRIVATE st7789)
