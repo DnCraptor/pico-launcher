@@ -133,31 +133,14 @@ inline static uint32_t __not_in_flash_func(read_flash_block)(FIL * f, uint8_t * 
     return expected_flash_target_offset;
 }
 
-bool __not_in_flash_func(load_firmware)(const char pathname[256]) {
+static bool __not_in_flash_func(flash_file)(char* pathname) {
     FIL file;
-
-    constexpr int window_y = (TEXTMODE_ROWS - 5) / 2;
-    constexpr int window_x = (TEXTMODE_COLS - 43) / 2;
-
-    draw_window("Loading firmware", window_x, window_y, 43, 5);
-
-    FILINFO fileinfo;
-    f_stat(pathname, &fileinfo);
-
-    if (FLASH_SIZE - (FIRMWARE_OFFSET << 10) < (fileinfo.fsize >> 1 )) {
-        draw_text("ERROR: Firmware too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
-        sleep_ms(5000);
-        return false;
-    }
-
-    draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
-    sleep_ms(500);
-
+    char* p = pathname;
     if (FR_OK == f_open(&file, pathname, FA_READ)) {
         uint32_t flash_target_offset = FIRMWARE_OFFSET << 10;
 
         multicore_lockout_start_blocking();
-       const uint32_t ints = save_and_disable_interrupts();
+        uint32_t ints = save_and_disable_interrupts();
         bool toff = false;
         while(true) {
             uint8_t buffer[FLASH_SECTOR_SIZE];
@@ -169,8 +152,7 @@ bool __not_in_flash_func(load_firmware)(const char pathname[256]) {
                 restore_interrupts(ints);
                 multicore_lockout_end_blocking();
                 gpio_put(PICO_DEFAULT_LED_PIN, false);
-                draw_text("Unexpected target offset...", window_x + 1, window_y + 2, 10, 1);
-                while(1);
+                return false;
             }
 
             flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
@@ -183,6 +165,34 @@ bool __not_in_flash_func(load_firmware)(const char pathname[256]) {
         multicore_lockout_end_blocking();
         gpio_put(PICO_DEFAULT_LED_PIN, false);
         f_close(&file);
+        watchdog_enable(100, true);
+    }
+    return true;
+}
+
+bool __not_in_flash_func(load_firmware)(const char pathname[256]) {
+    constexpr int window_y = (TEXTMODE_ROWS - 5) / 2;
+    constexpr int window_x = (TEXTMODE_COLS - 43) / 2;
+
+    draw_window("Loading firmware", window_x, window_y, 43, 5);
+
+    FILINFO fileinfo;
+    f_stat(pathname, &fileinfo);
+
+    /// TODO: detect FLASH_SIZE
+    if (FLASH_SIZE - (FIRMWARE_OFFSET << 10) < (fileinfo.fsize >> 1 )) {
+        draw_text("ERROR: Firmware too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
+        sleep_ms(5000);
+        return false;
+    }
+
+    draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
+    sleep_ms(500);
+    if (flash_file((char*)pathname)) {
+        draw_text(" Unexpected target offset...", window_x + 1, window_y + 2, 10, 1);
+        sleep_ms(5000);
+        draw_text(pathname, window_x + 1, window_y + 2, 10, 1);
+        while(1);
     }
     return true;
 }
@@ -241,6 +251,17 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char* exec
     if (FR_OK != f_mount(&fs, "SD", 1)) {
         draw_text("SD Card not inserted or SD Card error!", 0, 2, 12, 0);
         while (true);
+    }
+    FIL f;
+    if (f_open(&f, "/.firmware", FA_READ) == FR_OK) {
+        UINT br;
+        f_read(&f, (char*)basepath, 256, &br);
+        basepath[br] = 0;
+        f_close(&f);
+        f_unlink("/.firmware");
+        if (isExecutable(basepath, executables)) {
+            load_firmware(basepath);        
+        }
     }
 
     while (true) {
@@ -387,11 +408,7 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char* exec
 
                 if (file_at_cursor.is_executable) {
                     sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
-
-                    if (load_firmware(tmp)) {
-                        watchdog_enable(100, true);
-                        return;
-                    }
+                    load_firmware(tmp);
                 }
             }
 
@@ -427,7 +444,7 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char* exec
 int main() {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-
+    
     volatile uint32_t *qmi_m0_timing=(uint32_t *)0x400d000c;
     vreg_disable_voltage_limit();
     vreg_set_voltage(VREG_VOLTAGE_1_60);
@@ -440,6 +457,11 @@ int main() {
     //keyboard_send(0xFF);
     nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
 
+    char* y = (char*)0x20000000 + (512 << 10) - 4;
+	bool magic = (y[0] == 0xFF && y[1] == 0x0F && y[2] == 0xF0 && y[3] == 0x17);
+    if (magic) {
+        *y++ = 0; *y++ = 0; *y++ = 0; *y++ = 0;
+    }
     for (int i = 20; i--;) {
         nespad_read();
         sleep_ms(50);
@@ -450,7 +472,7 @@ int main() {
         }
 
         // Any other key/button - run launcher
-        if (nespad_state && !(nespad_state & DPAD_START) || input && input != 0x58) {
+        if (magic || (nespad_state && !(nespad_state & DPAD_START)) || (input && input != 0x58)) {
             sem_init(&vga_start_semaphore, 0, 1);
             multicore_launch_core1(render_core);
             sem_release(&vga_start_semaphore);
