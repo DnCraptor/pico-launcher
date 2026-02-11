@@ -20,6 +20,7 @@ include(pico_sdk_import.cmake)
 project(launcher C CXX ASM)
 pico_sdk_init()
 
+option(M2 "Murmulator 2.0" ON)
 
 option(VGA "Enable VGA" OFF)
 option(TFT "Enable TFT display" OFF)
@@ -38,7 +39,11 @@ if(NOT LAUNCHER_VERSION)
 set(LAUNCHER_VERSION 2)
 endif ()
 
-SET(BUILD_NAME "m1p2-uf2-${PROJECT_NAME}")
+if (M2)
+    SET(BUILD_NAME "m2p2-uf2-${PROJECT_NAME}")
+else()
+    SET(BUILD_NAME "m1p2-uf2-${PROJECT_NAME}")
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -121,7 +126,41 @@ target_compile_options(${PROJECT_NAME} PUBLIC
 )
 endif ()
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE
+if (M2)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        PICO_FLASH_SIZE_BYTES=16777216
+
+        # VGA 8 pins starts from pin:
+        VGA_BASE_PIN=12
+
+        # HDMI 8 pins starts from pin:
+        HDMI_BASE_PIN=12
+
+        # TFT
+        TFT_CS_PIN=12
+        TFT_RST_PIN=14
+        TFT_LED_PIN=15
+        TFT_DC_PIN=16
+        TFT_DATA_PIN=18
+        TFT_CLK_PIN=19
+
+        # SDCARD
+        SDCARD_PIN_SPI0_CS=5
+        SDCARD_PIN_SPI0_SCK=6
+        SDCARD_PIN_SPI0_MOSI=7
+        SDCARD_PIN_SPI0_MISO=4
+
+        # PS2 keyboard
+        KBD_CLOCK_PIN=2
+        KBD_DATA_PIN=3
+
+        # NES Gamepad
+        NES_GPIO_CLK=20
+        NES_GPIO_LAT=21
+        NES_GPIO_DATA=26
+    )
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
         PICO_FLASH_SIZE_BYTES=16777216
 
         # VGA 8 pins starts from pin:
@@ -150,9 +189,10 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 
         # NES Gamepad
         NES_GPIO_CLK=14
-        NES_GPIO_DATA=16
         NES_GPIO_LAT=15
-)
+        NES_GPIO_DATA=16
+    )
+endif ()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
 

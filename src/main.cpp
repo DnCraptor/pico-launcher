@@ -169,15 +169,11 @@ static bool __not_in_flash_func(flash_file)(char* pathname) {
 }
 
 bool __not_in_flash_func(load_firmware)(const char pathname[256]) {
-    constexpr int window_y = (TEXTMODE_ROWS - 5) / 2;
-    constexpr int window_x = (TEXTMODE_COLS - 43) / 2;
-
-    draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
+    draw_text("[ Loading... ]", 1, 0, 10, 1);
     sleep_ms(500);
     if (flash_file((char*)pathname)) {
-        draw_text(" Unexpected target offset...", window_x + 1, window_y + 2, 10, 1);
+        draw_text("[ Unexpected target offset... ]", 1, 0, 10, 1);
         sleep_ms(5000);
-        draw_text(pathname, window_x + 1, window_y + 2, 10, 1);
         while(1);
     }
     return true;
