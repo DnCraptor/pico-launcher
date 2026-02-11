@@ -4,9 +4,9 @@ if(WIN32)
 else()
     set(USERHOME $ENV{HOME})
 endif()
-set(sdkVersion 2.1.0)
+set(sdkVersion 2.2.0)
 set(toolchainVersion 13_3_Rel1)
-set(picotoolVersion 2.1.0)
+set(picotoolVersion 2.2.0)
 set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
     include(${picoVscode})
@@ -24,7 +24,7 @@ pico_sdk_init()
 option(VGA "Enable VGA" OFF)
 option(TFT "Enable TFT display" OFF)
 option(ILI9341 "Enable TFT ILI9341 display" OFF)
-option(HDMI "Enable HDMI display" OFF)
+option(HDMI "Enable HDMI display" ON)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
 
@@ -34,13 +34,11 @@ if(NOT FLASH_SIZE)
 set(FLASH_SIZE 4096)
 endif ()
 
-set(FIRMWARE_OFFSET 64)
-
 if(NOT LAUNCHER_VERSION)
 set(LAUNCHER_VERSION 2)
 endif ()
 
-SET(BUILD_NAME "m1p2-${PROJECT_NAME}")
+SET(BUILD_NAME "m1p2-uf2-${PROJECT_NAME}")
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -157,7 +155,6 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
-target_compile_definitions(${PROJECT_NAME} PRIVATE FIRMWARE_OFFSET=${FIRMWARE_OFFSET})
 
 IF (TFT)
     target_link_libraries(${PROJECT_NAME} PRIVATE st7789)

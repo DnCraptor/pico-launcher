@@ -94,22 +94,6 @@ void __time_critical_func(render_core)() {
     __unreachable();
 }
 
-void __always_inline run_application() {
-    multicore_reset_core1();
-
-    asm volatile (
-        "mov r0, %[start]\n"
-        "ldr r1, =%[vtable]\n"
-        "str r0, [r1]\n"
-        "ldmia r0, {r0, r1}\n"
-        "msr msp, r0\n"
-        "bx r1\n"
-        :: [start] "r" (XIP_BASE + (FIRMWARE_OFFSET << 10)), [vtable] "X" (PPB_BASE + M33_VTOR_OFFSET)
-    );
-
-    __unreachable();
-}
-
 inline static uint32_t __not_in_flash_func(read_flash_block)(FIL * f, uint8_t * buffer, uint32_t expected_flash_target_offset) {
     UINT bytes_read = 0;
     struct UF2_Block_t uf2_block{};
@@ -133,34 +117,48 @@ inline static uint32_t __not_in_flash_func(read_flash_block)(FIL * f, uint8_t * 
     return expected_flash_target_offset;
 }
 
+static inline bool __not_in_flash_func() memcmp32(const uint32_t* p1, const uint32_t* p2, size_t len) {
+    len >>= 2;
+    while(len--) {
+        if (*p1++ != *p2++) return true;
+    }
+    return false;
+}
+
 static bool __not_in_flash_func(flash_file)(char* pathname) {
     FIL file;
     char* p = pathname;
+    gpio_init(PICO_DEFAULT_LED_PIN);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     if (FR_OK == f_open(&file, pathname, FA_READ)) {
-        uint32_t flash_target_offset = FIRMWARE_OFFSET << 10;
+        uint32_t flash_target_offset = 0;
 
         multicore_lockout_start_blocking();
         uint32_t ints = save_and_disable_interrupts();
         bool toff = false;
         while(true) {
-            uint8_t buffer[FLASH_SECTOR_SIZE];
+            uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
             uint32_t next_flash_target_offset = read_flash_block(&file, buffer, flash_target_offset);
             if (next_flash_target_offset == flash_target_offset) {
                 break;
             }
-            if (next_flash_target_offset < (FIRMWARE_OFFSET << 10)) {
-                restore_interrupts(ints);
-                multicore_lockout_end_blocking();
-                gpio_put(PICO_DEFAULT_LED_PIN, false);
-                return false;
+            if (flash_target_offset == 0) {
+                // save original block
+                if (memcmp32((uint32_t*)buffer, (uint32_t*)(0x103EF000), FLASH_SECTOR_SIZE)) {
+                    flash_range_erase(0x003EF000, FLASH_SECTOR_SIZE);
+                    flash_range_program(0x003EF000, buffer, FLASH_SECTOR_SIZE);
+                }
+                /// patch 0x10000004 by my entry point
+                uint32_t *v = (uint32_t*)buffer;
+                v[1] = *(uint32_t*)(XIP_BASE + 4); // my Reset (any MSP, ISRx, ets. is or for me)
             }
-
-            flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
-            flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+            if (memcmp32((uint32_t*)buffer, (uint32_t*)(flash_target_offset + XIP_BASE), FLASH_SECTOR_SIZE)) {
+                flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
+                flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+            }
 
             flash_target_offset = next_flash_target_offset;
         }
-
         restore_interrupts(ints);
         multicore_lockout_end_blocking();
         gpio_put(PICO_DEFAULT_LED_PIN, false);
@@ -173,18 +171,6 @@ static bool __not_in_flash_func(flash_file)(char* pathname) {
 bool __not_in_flash_func(load_firmware)(const char pathname[256]) {
     constexpr int window_y = (TEXTMODE_ROWS - 5) / 2;
     constexpr int window_x = (TEXTMODE_COLS - 43) / 2;
-
-    draw_window("Loading firmware", window_x, window_y, 43, 5);
-
-    FILINFO fileinfo;
-    f_stat(pathname, &fileinfo);
-
-    /// TODO: detect FLASH_SIZE
-    if (FLASH_SIZE - (FIRMWARE_OFFSET << 10) < (fileinfo.fsize >> 1 )) {
-        draw_text("ERROR: Firmware too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
-        sleep_ms(5000);
-        return false;
-    }
 
     draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
     sleep_ms(500);
@@ -371,6 +357,66 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char* exec
                 }
             }
 
+            int per_page2 = per_page >> 1;
+
+            // PageDown
+            if (input == 0x51) {
+
+                int max_visible = total_files - offset;              // сколько реально видно
+                int max_cursor  = max_visible > per_page ? per_page : max_visible;
+
+                if (current_item + per_page2 < max_cursor) {
+                    // Курсор помещается в пределах текущего окна
+                    current_item += per_page2;
+                } else {
+                    // Нужно прокрутить окно
+                    int new_offset = offset + per_page2;
+
+                    if (new_offset + per_page > total_files)
+                        new_offset = total_files > per_page ? total_files - per_page : 0;
+
+                    offset = new_offset;
+
+                    // удерживаем курсор внутри страницы
+                    if (current_item >= total_files - offset)
+                        current_item = total_files - offset - 1;
+                }
+            }
+            // PageUp
+            if (input == 0x49) {
+
+                if (current_item >= per_page2) {
+                    current_item -= per_page2;
+                } else {
+                    int shift = per_page2 - current_item;
+
+                    if (offset >= shift) {
+                        offset -= shift;
+                    } else {
+                        offset = 0;
+                    }
+
+                    current_item = 0;
+                }
+            }
+            // Home
+            if (input == 0x47) {
+                offset = 0;
+                current_item = 0;
+            }
+            // End
+            if (input == 0x4F) {
+                if (total_files > 0) {
+                    if (total_files > per_page) {
+                        offset = total_files - per_page;
+                        current_item = per_page - 1;
+                    } else {
+                        offset = 0;
+                        current_item = total_files - 1;
+                    }
+                }
+            }
+
             if (nespad_state & DPAD_RIGHT || input == 0x4D || input == 0x7A) {
                 offset += per_page;
                 if (offset + (current_item + 1) > total_files) {
@@ -441,17 +487,25 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char* exec
     }
 }
 
+void __always_inline run_application() {
+    multicore_reset_core1();
+
+    asm volatile (
+        "cpsid i         \n" // IRQ off
+        "ldr r0, =0x103EF000\n"
+        "ldmia r0, {r0, r1}\n"
+        "msr msp, r0\n"
+        "bx r1\n"
+        ::
+    );
+
+    __unreachable();
+}
+
+
 int main() {
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-    
-    volatile uint32_t *qmi_m0_timing=(uint32_t *)0x400d000c;
-    vreg_disable_voltage_limit();
-    vreg_set_voltage(VREG_VOLTAGE_1_60);
-    sleep_ms(33);
-    *qmi_m0_timing = 0x60007204;
-    bool res = set_sys_clock_khz(378 * KHZ, 0);
-    *qmi_m0_timing = 0x60007303;
+//    run_application();
+    set_sys_clock_khz(252 * KHZ, 0);
 
     keyboard_init();
     //keyboard_send(0xFF);
@@ -459,9 +513,11 @@ int main() {
 
     char* y = (char*)0x20000000 + (512 << 10) - 4;
 	bool magic = (y[0] == 0xFF && y[1] == 0x0F && y[2] == 0xF0 && y[3] == 0x17);
+    uint32_t orig_addr32 = *(uint32_t*)(y - 4);
     if (magic) {
         *y++ = 0; *y++ = 0; *y++ = 0; *y++ = 0;
     }
+
     for (int i = 20; i--;) {
         nespad_read();
         sleep_ms(50);
@@ -476,14 +532,11 @@ int main() {
             sem_init(&vga_start_semaphore, 0, 1);
             multicore_launch_core1(render_core);
             sem_release(&vga_start_semaphore);
-
             sleep_ms(250);
-
-            filebrowser("", "m1p2");
+            filebrowser("", "uf2");
         }
     }
 
     run_application();
-
     __unreachable();
 }

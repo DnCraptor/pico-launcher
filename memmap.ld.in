@@ -23,7 +23,8 @@
 
 MEMORY
 {
-    FLASH(rx) : ORIGIN = 0x10000000, LENGTH = @FIRMWARE_OFFSET@k
+    BOOT2(rx) : ORIGIN = 0x10000000, LENGTH = 4k
+    FLASH(rx) : ORIGIN = 0x10000000 + 4096k - 64k, LENGTH = 64k
     RAM(rwx) : ORIGIN =  0x20000000, LENGTH = 512k
     SCRATCH_X(rwx) : ORIGIN = 0x20080000, LENGTH = 4k
     SCRATCH_Y(rwx) : ORIGIN = 0x20081000, LENGTH = 4k
@@ -46,15 +47,18 @@ SECTIONS
        to perform the same initial flash setup that would be performed on a
        cold boot.
     */
+    .xip_hdr : {
+        __logical_binary_start = .;
+        KEEP(*(.vectors))
+        KEEP(*(.binary_info_header))
+        __binary_info_header_end = .;
+        KEEP(*(.embedded_block))     /* тут должен лежать IMAGE_DEF */
+        __embedded_block_end = .;
+        . = ALIGN(4);
+    } > BOOT2
 
     .text : {
-        __logical_binary_start = .;
-        KEEP (*(.vectors))
-        KEEP (*(.binary_info_header))
-        __binary_info_header_end = .;
-        KEEP (*(.embedded_block))
-        __embedded_block_end = .;
-        KEEP (*(.reset))
+        KEEP(*(.reset))              /* reset handler */
         /* TODO revisit this now memset/memcpy/float in ROM */
         /* bit of a hack right now to exclude all floating point and time critical (e.g. memset, memcpy) code from
          * FLASH ... we will include any thing excluded here in .data below by default */
@@ -99,27 +103,6 @@ SECTIONS
         *(.eh_frame*)
         . = ALIGN(4);
     } > FLASH
-
-    /* Note the boot2 section is optional, and should be discarded if there is
-       no reference to it *inside* the binary, as it is not called by the
-       bootrom. (The bootrom performs a simple best-effort XIP setup and
-       leaves it to the binary to do anything more sophisticated.) However
-       there is still a size limit of 256 bytes, to ensure the boot2 can be
-       stored in boot RAM.
-
-       Really this is a "XIP setup function" -- the name boot2 is historic and
-       refers to its dual-purpose on RP2040, where it also handled vectoring
-       from the bootrom into the user image.
-    */
-
-    .boot2 : {
-        __boot2_start__ = .;
-        *(.boot2)
-        __boot2_end__ = .;
-    } > FLASH
-
-    ASSERT(__boot2_end__ - __boot2_start__ <= 256,
-        "ERROR: Pico second stage bootloader must be no more than 256 bytes in size")
 
     .rodata : {
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .rodata*)

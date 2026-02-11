@@ -334,6 +334,22 @@ void keyboard_init(void) {
     return;
 }
 
+void keyboard_deinit(void) {
+    // 1. Отключить IRQ на линии тактового сигнала
+    gpio_set_irq_enabled(KBD_CLOCK_PIN, GPIO_IRQ_EDGE_FALL, false);
+
+    // 2. Сбросить callback
+    gpio_set_irq_enabled_with_callback(KBD_CLOCK_PIN, GPIO_IRQ_EDGE_FALL, false, NULL);
+
+    // 3. Очистить буфер и счетчики
+    bitcount = 0;
+    memset(ps2buffer, 0, KBD_BUFFER_SIZE);
+
+    // 4. Перевести пины в безопасное состояние
+    gpio_deinit(KBD_CLOCK_PIN);
+    gpio_deinit(KBD_DATA_PIN);
+}
+
 extern uint16_t portram[256];
 
 extern void doirq(uint8_t irqnum);
