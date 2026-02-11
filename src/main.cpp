@@ -201,30 +201,25 @@ int compareFileItems(const void* a, const void* b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
-static inline bool isExecutable(const char pathname[256], const char* extensions) {
+static inline bool isExecutable(const char pathname[256]) {
     const char* extension = strrchr(pathname, '.');
     if (extension == nullptr) {
         return false;
     }
     extension++; // Move past the '.' character
-
-    const char* token = strtok((char *)extensions, "|"); // Tokenize the extensions string using '|'
-
-    while (token != nullptr) {
-        if (strcmp(extension, token) == 0) {
-            return true;
-        }
-        token = strtok(NULL, "|");
+    if (strcmp(extension, "uf2") == 0) {
+        return true;
     }
-
+    if (strcmp(extension, "UF2") == 0) {
+        return true;
+    }
     return false;
 }
 
-void __not_in_flash_func(filebrowser)(const char pathname[256], const char* executables) {
+void __not_in_flash_func(filebrowser)() {
     bool debounce = true;
-    char basepath[256];
+    char basepath[256] = "";
     char tmp[TEXTMODE_COLS + 1];
-    strcpy(basepath, pathname);
     constexpr int per_page = TEXTMODE_ROWS - 3;
 
     DIR dir;
@@ -241,7 +236,7 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char* exec
         basepath[br] = 0;
         f_close(&f);
         f_unlink("/.firmware");
-        if (isExecutable(basepath, executables)) {
+        if (isExecutable(basepath)) {
             load_firmware(basepath);        
         }
     }
@@ -283,7 +278,7 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char* exec
             // Set the file item properties
             fileItems[total_files].is_directory = fileInfo.fattrib & AM_DIR;
             fileItems[total_files].size = fileInfo.fsize;
-            fileItems[total_files].is_executable = isExecutable(fileInfo.fname, executables);
+            fileItems[total_files].is_executable = isExecutable(fileInfo.fname);
             strncpy(fileItems[total_files].filename, fileInfo.fname, 78);
             total_files++;
         }
@@ -331,6 +326,8 @@ void __not_in_flash_func(filebrowser)(const char pathname[256], const char* exec
                     sleep_ms(1);
                     pico_usb_drive_heartbeat();
                 }
+                debounce = true;
+                break;
             }
 
             if (nespad_state & DPAD_DOWN || input == 0x50) {
@@ -500,7 +497,6 @@ void __always_inline run_application() {
 
 
 int main() {
-//    run_application();
     set_sys_clock_khz(252 * KHZ, 0);
 
     keyboard_init();
@@ -529,7 +525,7 @@ int main() {
             multicore_launch_core1(render_core);
             sem_release(&vga_start_semaphore);
             sleep_ms(250);
-            filebrowser("", "uf2");
+            filebrowser();
         }
     }
 
