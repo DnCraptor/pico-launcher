@@ -20,12 +20,12 @@ include(pico_sdk_import.cmake)
 project(launcher C CXX ASM)
 pico_sdk_init()
 
-option(M2 "Murmulator 2.0" ON)
+option(M2 "Murmulator 2.0" OFF)
 
 option(VGA "Enable VGA" OFF)
 option(TFT "Enable TFT display" OFF)
 option(ILI9341 "Enable TFT ILI9341 display" OFF)
-option(HDMI "Enable HDMI display" ON)
+option(HDMI "Enable HDMI display" OFF)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
 
@@ -36,7 +36,7 @@ set(FLASH_SIZE 4096)
 endif ()
 
 if(NOT LAUNCHER_VERSION)
-set(LAUNCHER_VERSION 2)
+set(LAUNCHER_VERSION 3)
 endif ()
 
 if (M2)
@@ -158,6 +158,8 @@ if (M2)
         NES_GPIO_CLK=20
         NES_GPIO_LAT=21
         NES_GPIO_DATA=26
+
+        DEP_EXT="m2p2"
     )
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE
@@ -191,6 +193,8 @@ else ()
         NES_GPIO_CLK=14
         NES_GPIO_LAT=15
         NES_GPIO_DATA=16
+
+        DEP_EXT="m1p2"
     )
 endif ()
 

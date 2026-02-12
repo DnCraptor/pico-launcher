@@ -24,7 +24,7 @@ semaphore vga_start_semaphore;
 #define DISP_WIDTH (320)
 #define DISP_HEIGHT (240)
 
-#define ZERO_BLOCK_OFFSET ((16ul << 20) - (68ul << 10))
+#define ZERO_BLOCK_OFFSET ((16ul << 20) - (128ul << 10) - (4ul << 10))
 #define ZERO_BLOCK_ADDRESS (XIP_BASE + ZERO_BLOCK_OFFSET)
 
 struct UF2_Block_t {
@@ -128,13 +128,25 @@ static inline bool __not_in_flash_func() memcmp32(const uint32_t* p1, const uint
     return false;
 }
 
-static bool __not_in_flash_func(flash_file)(char* pathname) {
+static inline bool isExecutableOld(const char pathname[256]) {
+    const char* extension = strrchr(pathname, '.');
+    if (extension == nullptr) {
+        return false;
+    }
+    extension++; // Move past the '.' character
+    if (strcmp(extension, DEP_EXT) == 0) {
+        return true;
+    }
+    return false;
+}
+
+static bool __not_in_flash_func(flash_file)(const char pathname[256]) {
     FIL file;
-    char* p = pathname;
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     if (FR_OK == f_open(&file, pathname, FA_READ)) {
-        uint32_t flash_target_offset = 0;
+        bool e_old = isExecutableOld(pathname);
+        uint32_t flash_target_offset = e_old ? (64ul << 10) : 0;
 
         multicore_lockout_start_blocking();
         uint32_t ints = save_and_disable_interrupts();
@@ -146,18 +158,30 @@ static bool __not_in_flash_func(flash_file)(char* pathname) {
                 break;
             }
             if (flash_target_offset == 0) {
+                uint32_t *v = (uint32_t*)buffer;
+                uint32_t nm = v[2];
+                v[2] = 0x3836d91a; // MAGIC2
                 // save original block
                 if (memcmp32((uint32_t*)buffer, (uint32_t*)ZERO_BLOCK_ADDRESS, FLASH_SECTOR_SIZE)) {
                     flash_range_erase(ZERO_BLOCK_OFFSET, FLASH_SECTOR_SIZE);
                     flash_range_program(ZERO_BLOCK_OFFSET, buffer, FLASH_SECTOR_SIZE);
                 }
                 /// patch 0x10000004 by my entry point
-                uint32_t *v = (uint32_t*)buffer;
                 v[1] = *(uint32_t*)(XIP_BASE + 4); // my Reset (any MSP, ISRx, ets. is or for me)
+                v[2] = nm; // recover original value
             }
             if (memcmp32((uint32_t*)buffer, (uint32_t*)(flash_target_offset + XIP_BASE), FLASH_SECTOR_SIZE)) {
                 flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
                 flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+            }
+            if (e_old && flash_target_offset == (64ul << 10)) {
+                uint32_t *v = (uint32_t*)buffer;
+                uint32_t nm = v[2];
+                v[2] = 0x3836d91b; // MAGIC 5
+                if (memcmp32((uint32_t*)buffer, (uint32_t*)ZERO_BLOCK_ADDRESS, FLASH_SECTOR_SIZE)) {
+                    flash_range_erase(ZERO_BLOCK_OFFSET, FLASH_SECTOR_SIZE);
+                    flash_range_program(ZERO_BLOCK_OFFSET, buffer, FLASH_SECTOR_SIZE);
+                }
             }
 
             flash_target_offset = next_flash_target_offset;
@@ -166,6 +190,7 @@ static bool __not_in_flash_func(flash_file)(char* pathname) {
         multicore_lockout_end_blocking();
         gpio_put(PICO_DEFAULT_LED_PIN, false);
         f_close(&file);
+        *(uint32_t*)(0x20000000 + (512 << 10) - 8) = 0x383da910; // magic3
         watchdog_enable(100, true);
     }
     return true;
@@ -174,7 +199,7 @@ static bool __not_in_flash_func(flash_file)(char* pathname) {
 bool __not_in_flash_func(load_firmware)(const char pathname[256]) {
     draw_text("[ Loading... ]", 1, 0, 10, 1);
     sleep_ms(500);
-    if (flash_file((char*)pathname)) {
+    if (flash_file(pathname)) {
         draw_text("[ Unexpected target offset... ]", 1, 0, 10, 1);
         sleep_ms(5000);
         while(1);
@@ -216,7 +241,10 @@ static inline bool isExecutable(const char pathname[256]) {
     if (strcmp(extension, "UF2") == 0) {
         return true;
     }
-    return false;
+    if (strcmp(extension, DEP_EXT) == 0) {
+        return true;
+    }
+    return isExecutableOld(pathname);
 }
 
 void __not_in_flash_func(filebrowser)() {
@@ -498,8 +526,32 @@ void __always_inline run_application() {
     __unreachable();
 }
 
+void __always_inline run_old_application() {
+    multicore_reset_core1();
+
+    asm volatile (
+        "cpsid i         \n" // IRQ off
+        "mov r0, %[start]\n"
+        "ldr r1, =%[vtable]\n"
+        "str r0, [r1]\n"
+        "ldmia r0, {r0, r1}\n"
+        "msr msp, r0\n"
+        "bx r1\n"
+        :: [start] "r" (XIP_BASE + (64ul << 10)), [vtable] "X" (PPB_BASE + M33_VTOR_OFFSET)
+    );
+
+    __unreachable();
+}
 
 int main() {
+    if( *(uint32_t*)(0x20000000 + (512 << 10) - 8) == 0x383da910) { // magic 3
+        if (((uint32_t*)ZERO_BLOCK_ADDRESS)[2] == 0x3836d91b) {  // magic 5
+            run_old_application();
+        } else {
+            run_application();
+        }
+        __unreachable();
+    }
     set_sys_clock_khz(252 * KHZ, 0);
 
     keyboard_init();
@@ -511,6 +563,10 @@ int main() {
     uint32_t orig_addr32 = *(uint32_t*)(y - 4);
     if (magic) {
         *y++ = 0; *y++ = 0; *y++ = 0; *y++ = 0;
+    } else {
+        // not yet flashed
+        magic = ((uint32_t*)ZERO_BLOCK_ADDRESS)[2] != 0x3836d91a // MAGIC 2
+                && ((uint32_t*)ZERO_BLOCK_ADDRESS)[2] != 0x3836d91b; // MAGIC 5
     }
 
     for (int i = 20; i--;) {
@@ -532,6 +588,10 @@ int main() {
         }
     }
 
-    run_application();
+    if (((uint32_t*)ZERO_BLOCK_ADDRESS)[2] == 0x3836d91b) { // MAGIC 5
+        run_old_application();
+    } else {
+        run_application();
+    }
     __unreachable();
 }
