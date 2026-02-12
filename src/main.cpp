@@ -24,6 +24,9 @@ semaphore vga_start_semaphore;
 #define DISP_WIDTH (320)
 #define DISP_HEIGHT (240)
 
+#define ZERO_BLOCK_OFFSET ((16ul << 20) - (68ul << 10))
+#define ZERO_BLOCK_ADDRESS (XIP_BASE + ZERO_BLOCK_OFFSET)
+
 struct UF2_Block_t {
     // 32 byte header
     uint32_t magicStart0;
@@ -144,9 +147,9 @@ static bool __not_in_flash_func(flash_file)(char* pathname) {
             }
             if (flash_target_offset == 0) {
                 // save original block
-                if (memcmp32((uint32_t*)buffer, (uint32_t*)(0x103EF000), FLASH_SECTOR_SIZE)) {
-                    flash_range_erase(0x003EF000, FLASH_SECTOR_SIZE);
-                    flash_range_program(0x003EF000, buffer, FLASH_SECTOR_SIZE);
+                if (memcmp32((uint32_t*)buffer, (uint32_t*)ZERO_BLOCK_ADDRESS, FLASH_SECTOR_SIZE)) {
+                    flash_range_erase(ZERO_BLOCK_OFFSET, FLASH_SECTOR_SIZE);
+                    flash_range_program(ZERO_BLOCK_OFFSET, buffer, FLASH_SECTOR_SIZE);
                 }
                 /// patch 0x10000004 by my entry point
                 uint32_t *v = (uint32_t*)buffer;
@@ -485,11 +488,11 @@ void __always_inline run_application() {
 
     asm volatile (
         "cpsid i         \n" // IRQ off
-        "ldr r0, =0x103EF000\n"
+        "ldr r0, =%[zb_addr]\n"
         "ldmia r0, {r0, r1}\n"
         "msr msp, r0\n"
         "bx r1\n"
-        ::
+        :: [zb_addr] "X" (ZERO_BLOCK_ADDRESS)
     );
 
     __unreachable();
