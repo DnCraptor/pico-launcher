@@ -20,9 +20,9 @@ include(pico_sdk_import.cmake)
 project(launcher C CXX ASM)
 pico_sdk_init()
 
-option(M2 "Murmulator 2.0" OFF)
+option(M2 "Murmulator 2.0" ON)
 
-option(VGA "Enable VGA" OFF)
+option(VGA "Enable VGA" ON)
 option(TFT "Enable TFT display" OFF)
 option(ILI9341 "Enable TFT ILI9341 display" OFF)
 option(HDMI "Enable HDMI display" OFF)
@@ -36,7 +36,7 @@ set(FLASH_SIZE 4096)
 endif ()
 
 if(NOT LAUNCHER_VERSION)
-set(LAUNCHER_VERSION 3)
+set(LAUNCHER_VERSION 4)
 endif ()
 
 if (M2)

@@ -24,10 +24,10 @@ semaphore vga_start_semaphore;
 #define DISP_WIDTH (320)
 #define DISP_HEIGHT (240)
 
-#define ZERO_BLOCK_OFFSET ((16ul << 20) - (128ul << 10) - (4ul << 10))
+#define ZERO_BLOCK_OFFSET ((16ul << 20) - (256ul << 10) - (4ul << 10))
 #define ZERO_BLOCK_ADDRESS (XIP_BASE + ZERO_BLOCK_OFFSET)
 
-struct UF2_Block_t {
+typedef struct UF2_Block_t {
     // 32 byte header
     uint32_t magicStart0;
     uint32_t magicStart1;
@@ -99,7 +99,7 @@ void __time_critical_func(render_core)() {
 
 inline static uint32_t __not_in_flash_func(read_flash_block)(FIL * f, uint8_t * buffer, uint32_t expected_flash_target_offset) {
     UINT bytes_read = 0;
-    struct UF2_Block_t uf2_block{};
+    UF2_Block_t uf2_block{};
     uint32_t data_sector_index = 0;
     for(; data_sector_index < FLASH_SECTOR_SIZE; data_sector_index += 256) {
         f_read(f, &uf2_block, sizeof(uf2_block), &bytes_read);
@@ -120,12 +120,12 @@ inline static uint32_t __not_in_flash_func(read_flash_block)(FIL * f, uint8_t * 
     return expected_flash_target_offset;
 }
 
-static inline bool __not_in_flash_func() memcmp32(const uint32_t* p1, const uint32_t* p2, size_t len) {
+static inline int __not_in_flash_func() memcmp32(const uint32_t* p1, const uint32_t* p2, size_t len) {
     len >>= 2;
     while(len--) {
-        if (*p1++ != *p2++) return true;
+        if (*p1++ != *p2++) return 1;
     }
-    return false;
+    return 0;
 }
 
 static inline bool isExecutableOld(const char pathname[256]) {
@@ -159,8 +159,8 @@ static bool __not_in_flash_func(flash_file)(const char pathname[256]) {
             }
             if (flash_target_offset == 0) {
                 uint32_t *v = (uint32_t*)buffer;
-                uint32_t nm = v[2];
-                v[2] = 0x3836d91a; // MAGIC2
+                uint32_t nm = v[1023];
+                v[1023] = 0x3836d91a; // MAGIC 2
                 // save original block
                 if (memcmp32((uint32_t*)buffer, (uint32_t*)ZERO_BLOCK_ADDRESS, FLASH_SECTOR_SIZE)) {
                     flash_range_erase(ZERO_BLOCK_OFFSET, FLASH_SECTOR_SIZE);
@@ -168,7 +168,7 @@ static bool __not_in_flash_func(flash_file)(const char pathname[256]) {
                 }
                 /// patch 0x10000004 by my entry point
                 v[1] = *(uint32_t*)(XIP_BASE + 4); // my Reset (any MSP, ISRx, ets. is or for me)
-                v[2] = nm; // recover original value
+                v[1023] = nm; // recover original value
             }
             if (memcmp32((uint32_t*)buffer, (uint32_t*)(flash_target_offset + XIP_BASE), FLASH_SECTOR_SIZE)) {
                 flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
@@ -176,8 +176,7 @@ static bool __not_in_flash_func(flash_file)(const char pathname[256]) {
             }
             if (e_old && flash_target_offset == (64ul << 10)) {
                 uint32_t *v = (uint32_t*)buffer;
-                uint32_t nm = v[2];
-                v[2] = 0x3836d91b; // MAGIC 5
+                v[1023] = 0x3836d91b; // MAGIC 5
                 if (memcmp32((uint32_t*)buffer, (uint32_t*)ZERO_BLOCK_ADDRESS, FLASH_SECTOR_SIZE)) {
                     flash_range_erase(ZERO_BLOCK_OFFSET, FLASH_SECTOR_SIZE);
                     flash_range_program(ZERO_BLOCK_OFFSET, buffer, FLASH_SECTOR_SIZE);
@@ -190,8 +189,17 @@ static bool __not_in_flash_func(flash_file)(const char pathname[256]) {
         multicore_lockout_end_blocking();
         gpio_put(PICO_DEFAULT_LED_PIN, false);
         f_close(&file);
+
+        if (f_open(&file, "/.firmware", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+            UINT br;
+            f_write(&file, (char*)pathname, strlen(pathname), &br);
+            f_close(&file);
+        }
+
         *(uint32_t*)(0x20000000 + (512 << 10) - 8) = 0x383da910; // magic3
         watchdog_enable(100, true);
+        while(1);
+        __unreachable();
     }
     return true;
 }
@@ -249,27 +257,17 @@ static inline bool isExecutable(const char pathname[256]) {
 
 void __not_in_flash_func(filebrowser)() {
     bool debounce = true;
-    char basepath[256] = "";
-    char tmp[TEXTMODE_COLS + 1];
+    static char basepath[256] = "";
+    static char tmp[TEXTMODE_COLS + 1];
     constexpr int per_page = TEXTMODE_ROWS - 3;
 
-    DIR dir;
-    FILINFO fileInfo;
+    static DIR dir;
+    static FILINFO fileInfo;
 
     if (FR_OK != f_mount(&fs, "SD", 1)) {
         draw_text("SD Card not inserted or SD Card error!", 0, 2, 12, 0);
+        draw_text("Insert some FAT32 card and reboot...", 0, 3, 12, 0);
         while (true);
-    }
-    FIL f;
-    if (f_open(&f, "/.firmware", FA_READ) == FR_OK) {
-        UINT br;
-        f_read(&f, (char*)basepath, 256, &br);
-        basepath[br] = 0;
-        f_close(&f);
-        f_unlink("/.firmware");
-        if (isExecutable(basepath)) {
-            load_firmware(basepath);        
-        }
     }
 
     while (true) {
@@ -310,7 +308,8 @@ void __not_in_flash_func(filebrowser)() {
             fileItems[total_files].is_directory = fileInfo.fattrib & AM_DIR;
             fileItems[total_files].size = fileInfo.fsize;
             fileItems[total_files].is_executable = isExecutable(fileInfo.fname);
-            strncpy(fileItems[total_files].filename, fileInfo.fname, 78);
+            strncpy(fileItems[total_files].filename, fileInfo.fname, sizeof(fileItems[0].filename) - 1);
+            fileItems[total_files].filename[sizeof(fileItems[0].filename) - 1] = 0;
             total_files++;
         }
         f_closedir(&dir);
@@ -511,70 +510,74 @@ void __not_in_flash_func(filebrowser)() {
     }
 }
 
-void __always_inline run_application() {
-    multicore_reset_core1();
-
-    asm volatile (
-        "cpsid i         \n" // IRQ off
-        "ldr r0, =%[zb_addr]\n"
-        "ldmia r0, {r0, r1}\n"
-        "msr msp, r0\n"
-        "bx r1\n"
-        :: [zb_addr] "X" (ZERO_BLOCK_ADDRESS)
-    );
-
-    __unreachable();
-}
-
-void __always_inline run_old_application() {
-    multicore_reset_core1();
-
-    asm volatile (
-        "cpsid i         \n" // IRQ off
-        "mov r0, %[start]\n"
-        "ldr r1, =%[vtable]\n"
-        "str r0, [r1]\n"
-        "ldmia r0, {r0, r1}\n"
-        "msr msp, r0\n"
-        "bx r1\n"
-        :: [start] "r" (XIP_BASE + (64ul << 10)), [vtable] "X" (PPB_BASE + M33_VTOR_OFFSET)
-    );
-
-    __unreachable();
-}
-
-int main() {
-    if( *(uint32_t*)(0x20000000 + (512 << 10) - 8) == 0x383da910) { // magic 3
-        if (((uint32_t*)ZERO_BLOCK_ADDRESS)[2] == 0x3836d91b) {  // magic 5
-            run_old_application();
+__attribute__((constructor))
+static void before_main(void) {
+    if ( *(uint32_t*)(0x20000000 + (512 << 10) - 4) != 0x17F00FFF &&    // magic (enter to UI)
+         *(uint32_t*)(0x20000000 + (512 << 10) - 8) == 0x383da910       // magic 3 (enter to target)
+    ) {
+        *(uint32_t*)(0x20000000 + (512 << 10) - 8) = 0; // cleanup magic 3 (expected to be set each time, if required)
+        if (((uint32_t*)ZERO_BLOCK_ADDRESS)[1023] == 0x3836d91b) {  // magic 5
+            asm volatile (
+                "mov r0, %[start]\n"
+                "ldr r1, =%[vtable]\n"
+                "str r0, [r1]\n"
+                "ldmia r0, {r0, r1}\n"
+                "msr msp, r0\n"
+                "bx r1\n"
+                :: [start] "r" (XIP_BASE + (64ul << 10)), [vtable] "X" (PPB_BASE + M33_VTOR_OFFSET)
+            );
         } else {
-            run_application();
+            // VTOR deliberately stays at 0x10000000 to preserve app IRQ vectors;
+            // we only override Reset via manual jump using archived block
+            asm volatile (
+                "ldr r0, =%[zb_addr]\n"
+                "ldmia r0, {r0, r1}\n"
+                "msr msp, r0\n"
+                "bx r1\n"
+                :: [zb_addr] "X" (ZERO_BLOCK_ADDRESS)
+            );
         }
         __unreachable();
     }
+}
+
+const uint8_t erase_blok[4096]
+    __aligned(4096)
+    __attribute__((section(".erase_block"), used)) = { 0 };
+
+int main() {
     set_sys_clock_khz(252 * KHZ, 0);
 
     keyboard_init();
     //keyboard_send(0xFF);
     nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
 
-    char* y = (char*)0x20000000 + (512 << 10) - 4;
-	bool magic = (y[0] == 0xFF && y[1] == 0x0F && y[2] == 0xF0 && y[3] == 0x17);
-    uint32_t orig_addr32 = *(uint32_t*)(y - 4);
+    // external magic to force UI
+	bool magic = *(uint32_t*)(0x20000000 + (512 << 10) - 4) == 0x17F00FFF;
     if (magic) {
-        *y++ = 0; *y++ = 0; *y++ = 0; *y++ = 0;
+        *(uint32_t*)(0x20000000 + (512 << 10) - 4) = 0;
     } else {
-        // not yet flashed
-        magic = ((uint32_t*)ZERO_BLOCK_ADDRESS)[2] != 0x3836d91a // MAGIC 2
-                && ((uint32_t*)ZERO_BLOCK_ADDRESS)[2] != 0x3836d91b; // MAGIC 5
+        // not yet flashed (internal magics)
+        magic = ((uint32_t*)ZERO_BLOCK_ADDRESS)[1023] != 0x3836d91a // MAGIC 2
+                && ((uint32_t*)ZERO_BLOCK_ADDRESS)[1023] != 0x3836d91b; // MAGIC 5
     }
+    
+    if (FR_OK == f_mount(&fs, "SD", 1)) {
+        static FIL f;
+        if (f_open(&f, "/.firmware", FA_READ) == FR_OK) {
+            f_close(&f);
+        } else {
+            magic = true; // we have no SD card marker (may be removed to force pass into UI)
+        }
+        f_mount(0, "SD", 1); // unmount
+    } // else no-sdcard mode
 
     for (int i = 20; i--;) {
         nespad_read();
         sleep_ms(50);
 
         // F12 Boot to USB FIRMWARE UPDATE mode
-        if (nespad_state & DPAD_START || input == 0x58) {
+        if ((nespad_state & DPAD_START) && !(nespad_state & DPAD_SELECT) || input == 0x58) {
             reset_usb_boot(0, 0);
         }
 
@@ -588,10 +591,8 @@ int main() {
         }
     }
 
-    if (((uint32_t*)ZERO_BLOCK_ADDRESS)[2] == 0x3836d91b) { // MAGIC 5
-        run_old_application();
-    } else {
-        run_application();
-    }
+    *(uint32_t*)(0x20000000 + (512 << 10) - 8) = 0x383da910; // magic 3
+    watchdog_enable(100, true);
+    while(1);
     __unreachable();
 }
