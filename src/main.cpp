@@ -49,8 +49,22 @@ static uint32_t input;
 
 extern "C" {
 bool __time_critical_func(handleScancode)(const uint32_t ps2scancode) {
-    if (ps2scancode)
-        input = ps2scancode;
+    if (!ps2scancode)
+        return true;
+
+    // ps2kbd reports XT set-1 make/break codes. Extended keys keep the E0
+    // prefix in the upper byte (E050/E0D0), while the launcher uses only the
+    // normalized low-byte code (50). Keep input as the current key state:
+    // set it on make and clear it only on the matching break.
+    const uint8_t raw_scancode = (uint8_t)ps2scancode;
+    const uint8_t scancode = raw_scancode & 0x7F;
+
+    if (raw_scancode & 0x80) {
+        if (input == scancode)
+            input = 0;
+    } else {
+        input = scancode;
+    }
 
     return true;
 }
@@ -330,7 +344,18 @@ void __not_in_flash_func(filebrowser)() {
         int current_item = 0;
 
         while (true) {
-            sleep_ms(100);
+#ifdef HID
+            keyboard_task();
+#endif
+            sleep_ms(1);
+#ifdef HID
+            for (int i = 0; i < 99; ++i) {
+                keyboard_task();
+                sleep_ms(1);
+            }
+#else
+            sleep_ms(99);
+#endif
 
             if (!debounce) {
                 debounce = !(nespad_state & DPAD_START) && input != 0x1C;
@@ -580,7 +605,14 @@ int main() {
 
     for (int i = 20; i--;) {
         nespad_read();
+#ifdef HID
+        for (int j = 0; j < 50; ++j) {
+            keyboard_task();
+            sleep_ms(1);
+        }
+#else
         sleep_ms(50);
+#endif
 
         // F12 Boot to USB FIRMWARE UPDATE mode
         if ((nespad_state & DPAD_START) && !(nespad_state & DPAD_SELECT) || input == 0x58) {

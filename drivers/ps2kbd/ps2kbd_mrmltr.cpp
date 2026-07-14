@@ -9,7 +9,11 @@
 // https://wiki.osdev.org/PS/2_Keyboard
 //
 #include "ps2kbd_mrmltr.h"
+#if KBD_CLOCK_PIN == 2
+#include "ps2kbd_mrmltr2.pio.h"
+#else
 #include "ps2kbd_mrmltr.pio.h"
+#endif
 #include "hardware/clocks.h"
 
 #ifdef DEBUG_PS2
@@ -156,7 +160,12 @@ static uint8_t ps2kbd_page_0[] {
   /* 83 (131) */ HID_KEY_F7
 };
 
-Ps2Kbd_Mrmltr::Ps2Kbd_Mrmltr(PIO pio, uint base_gpio, std::function<void(hid_keyboard_report_t *curr, hid_keyboard_report_t *prev)> keyHandler) :
+
+Ps2Kbd_Mrmltr::Ps2Kbd_Mrmltr(
+    PIO pio,
+    uint base_gpio,
+    void (*keyHandler)(hid_keyboard_report_t*, hid_keyboard_report_t*)
+) :
   _pio(pio),
   _base_gpio(base_gpio),
   _double(false),
@@ -167,9 +176,16 @@ Ps2Kbd_Mrmltr::Ps2Kbd_Mrmltr(PIO pio, uint base_gpio, std::function<void(hid_key
   clearActions();
 }
 
-void Ps2Kbd_Mrmltr::clearHidKeys() {
+bool Ps2Kbd_Mrmltr::clearHidKeys() {
+  bool res = _report.modifier != 0;
   _report.modifier = 0;
-  for (int i = 0; i < HID_KEYBOARD_REPORT_MAX_KEYS; ++i) _report.keycode[i] = HID_KEY_NONE;
+  for (int i = 0; i < HID_KEYBOARD_REPORT_MAX_KEYS; ++i) {
+    if (_report.keycode[i] != HID_KEY_NONE) {
+      res = true;
+      _report.keycode[i] = HID_KEY_NONE;
+    }
+  }
+  return res;
 }
 
 inline static uint8_t hidKeyToMod(uint8_t hidKeyCode) {
@@ -260,25 +276,31 @@ uint8_t Ps2Kbd_Mrmltr::hidCodePage1(uint8_t ps2code) {
   }
 }
 
+
 void Ps2Kbd_Mrmltr::handleActions() {
-  #ifdef DEBUG_PS2
+  /*
+  FIL f;
+  f_open(&f, "1.log", FA_OPEN_APPEND | FA_WRITE);
+  char tmp[64];
   for (uint i = 0; i <= _action; ++i) {
-    DBG_PRINTF("PS/2 key %s page %2.2X (%3.3d) code %2.2X (%3.3d)\n",
-      _actions[i].release ? "release" : "press",
+    snprintf(tmp, 64, "PS/2 key %s (i: %d) page %2.2X (%3.3d) code %2.2X (%3.3d)\n",
+      _actions[i].release ? "release" : "press", i,
       _actions[i].page,
       _actions[i].page,
       _actions[i].code,
       _actions[i].code);
+    UINT bw;
+    f_write(&f, tmp, strlen(tmp), &bw); 
   }
-  #endif
-  
+  f_close(&f);
+  */
   uint8_t hidCode;
   bool release;
   if (_action == 0) {
     switch (_actions[0].page) {
       case 1: {
         hidCode = hidCodePage1(_actions[0].code);
-        break; 
+        break;
       }
       default: {
         hidCode = hidCodePage0(_actions[0].code);
@@ -288,9 +310,14 @@ void Ps2Kbd_Mrmltr::handleActions() {
     release = _actions[0].release;
   }
   else {
+    if (_action == 1 && _actions[0].code == 0x14 && _actions[1].code == 0x77) {
+       hidCode = HID_KEY_PAUSE;
+       release = _actions[0].release;
+    } else {
     // TODO get the HID code for extended PS/2 codes
-    hidCode = HID_KEY_NONE;
-    release = false;
+      hidCode = HID_KEY_NONE;
+      release = false;
+    }
   }
   
   if (hidCode != HID_KEY_NONE) {
@@ -315,17 +342,23 @@ void Ps2Kbd_Mrmltr::handleActions() {
   #endif
 }
 
+void handleDown(uint32_t sc);
+
 void Ps2Kbd_Mrmltr::tick() {
+  handleDown(0); // handle autorepeat
   if (pio_sm_is_rx_fifo_full(_pio, _sm)) {
     DBG_PRINTF("PS/2 keyboard PIO overflow\n");
     _overflow = true;
     while (!pio_sm_is_rx_fifo_empty(_pio, _sm)) {
       // pull a scan code from the PIO SM fifo
       uint32_t rc = _pio->rxf[_sm];    
-      printf("PS/2 drain rc %4.4lX (%ld)\n", rc, rc);
+      // printf("PS/2 drain rc %4.4lX (%ld)\n", rc, rc);
     }
-    clearHidKeys();
+    // Release all currently pressed keys to prevent sticky keys
+    hid_keyboard_report_t prev = _report;
+    bool changed = clearHidKeys();
     clearActions();
+    if (changed) _keyHandler(&_report, &prev);
   }
   
   while (!pio_sm_is_rx_fifo_empty(_pio, _sm)) {
@@ -381,11 +414,19 @@ void Ps2Kbd_Mrmltr::init_gpio() {
     // get a state machine
     _sm = pio_claim_unused_sm(_pio, true);
     // reserve program space in SM memory
+#if KBD_CLOCK_PIN == 2
+    uint offset = pio_add_program(_pio, &m2ps2kbd_program);
+#else
     uint offset = pio_add_program(_pio, &ps2kbd_program);
+#endif
     // Set pin directions base
     pio_sm_set_consecutive_pindirs(_pio, _sm, _base_gpio, 2, false);
     // program the start and wrap SM registers
+#if KBD_CLOCK_PIN == 2
+    pio_sm_config c = m2ps2kbd_program_get_default_config(offset);
+#else
     pio_sm_config c = ps2kbd_program_get_default_config(offset);
+#endif
     // Set the base input pin. pin index 0 is DAT, index 1 is CLK  // Murmulator: 0->CLK 1->DAT ( _base_gpio + 1)
     //  sm_config_set_in_pins(&c, _base_gpio);
     sm_config_set_in_pins(&c, _base_gpio + 1);

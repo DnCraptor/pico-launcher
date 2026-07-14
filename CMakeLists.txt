@@ -36,6 +36,7 @@ option(ILI9341 "Enable TFT ILI9341 display" OFF)
 option(HDMI "Enable HDMI display" ON)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
+option(HID "Enable USB HID host (USB drive mode is unavailable)" ON)
 
 option(FLASH_SIZE "Target Flash Size" 4096)
 
@@ -63,7 +64,11 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 
-add_subdirectory(drivers/ps2)
+if (HID)
+    add_subdirectory(drivers/ps2kbd)
+else()
+    add_subdirectory(drivers/ps2)
+endif()
 add_subdirectory(drivers/fatfs)
 add_subdirectory(drivers/sdcard)
 add_subdirectory(drivers/nespad)
@@ -76,7 +81,11 @@ add_subdirectory(drivers/tv-software)
 add_subdirectory(drivers/graphics)
 
 # INCLUDE FILES THAT SHOULD BE COMPILED:
-file(GLOB_RECURSE SRC "src/*.cpp" "src/*.c" "drivers/usb/*.c")
+if (HID)
+    file(GLOB_RECURSE SRC "src/*.cpp" "src/*.c" "drivers/usbhost/*.c" "drivers/usbhost/*.cpp")
+else()
+    file(GLOB_RECURSE SRC "src/*.cpp" "src/*.c" "drivers/usb/*.c")
+endif()
 
 message(STATUS "Add source files:")
 foreach (SRC_FILE IN LISTS SRC)
@@ -86,6 +95,9 @@ message(STATUS "")
 
 add_executable(${PROJECT_NAME} ${SRC})
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if (HID)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usbhost)
+endif()
 
 configure_file(memmap.ld.in memmap.ld @ONLY)
 pico_set_linker_script(${PROJECT_NAME} ${CMAKE_CURRENT_BINARY_DIR}/memmap.ld)
@@ -94,7 +106,6 @@ pico_set_program_name(${PROJECT_NAME} "RetroPico Launcher")
 pico_set_program_version(${PROJECT_NAME} "test")
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
-        ps2
         sdcard
         fatfs
         nespad
@@ -109,15 +120,27 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         hardware_flash
 
         tinyusb_board
-        tinyusb_device
 )
+if (HID)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HID=1)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ps2kbd tinyusb_host)
+else()
+    target_link_libraries(${PROJECT_NAME} PRIVATE ps2 tinyusb_device)
+endif()
 
 #family_configure_device_example(${PROJECT_NAME} noos)
 target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage)
 target_include_directories(${PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb
 )
+if (HID)
+    target_include_directories(${PROJECT_NAME} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usbhost
+        ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb
+    )
+else()
+    target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb)
+endif()
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
 target_compile_options(${PROJECT_NAME} PUBLIC
@@ -278,6 +301,10 @@ ELSE()
     target_link_libraries(${PROJECT_NAME} PRIVATE vga-nextgen)
     SET(BUILD_NAME "${BUILD_NAME}-VGA")
 ENDIF()
+
+if (HID)
+    SET(BUILD_NAME "${BUILD_NAME}-HID")
+endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${BUILD_NAME}")
 
