@@ -324,6 +324,13 @@ static inline void irq_set_exclusive_handler_DMA_core1() {
 
 //деинициализация - инициализация ресурсов
 static inline bool hdmi_init() {
+#if ZERO2
+    // GPIO 32..39 are visible to a PIO block only after selecting GPIO base 16.
+    // This must happen before any pio_gpio_init(), pin-direction or SM config calls.
+    pio_set_gpio_base(PIO_VIDEO, 16);
+    pio_set_gpio_base(PIO_VIDEO_ADDR, 16);
+#endif
+
     //выключение прерывания DMA
     if (VIDEO_DMA_IRQ == DMA_IRQ_0) {
         dma_channel_set_irq0_enabled(dma_chan_ctrl, false);
@@ -407,8 +414,17 @@ static inline bool hdmi_init() {
         gpio_set_slew_rate(beginHDMI_PIN_clk + i, GPIO_SLEW_RATE_FAST);
     }
 
+#if ZERO2
+    pio_sm_set_consecutive_pindirs(PIO_VIDEO, SM_video, HDMI_BASE_PIN, 8, true);
+    pio_sm_set_consecutive_pindirs(PIO_VIDEO_ADDR, SM_conv, HDMI_BASE_PIN, 8, true);
+
+    uint64_t mask64 = (uint64_t)3u << beginHDMI_PIN_clk;
+    pio_sm_set_pins_with_mask64(PIO_VIDEO, SM_video, mask64, mask64);
+    pio_sm_set_pindirs_with_mask64(PIO_VIDEO, SM_video, mask64, mask64);
+#else
     pio_sm_set_pins_with_mask(PIO_VIDEO, SM_video, 3u << beginHDMI_PIN_clk, 3u << beginHDMI_PIN_clk);
     pio_sm_set_pindirs_with_mask(PIO_VIDEO, SM_video, 3u << beginHDMI_PIN_clk, 3u << beginHDMI_PIN_clk);
+#endif
     //пины
 
     for (int i = 0; i < 6; i++) {

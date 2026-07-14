@@ -115,7 +115,9 @@ inline static uint32_t __not_in_flash_func(read_flash_block)(FIL * f, uint8_t * 
         }
         memcpy(buffer + data_sector_index, uf2_block.data, 256);
         expected_flash_target_offset += 256;
+        #ifdef PICO_DEFAULT_LED_PIN
         gpio_put(PICO_DEFAULT_LED_PIN, (expected_flash_target_offset >> 13) & 1);
+        #endif
     }
     return expected_flash_target_offset;
 }
@@ -142,8 +144,10 @@ static inline bool isExecutableOld(const char pathname[256]) {
 
 static bool __not_in_flash_func(flash_file)(const char pathname[256]) {
     FIL file;
+    #ifdef PICO_DEFAULT_LED_PIN
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+    #endif
     if (FR_OK == f_open(&file, pathname, FA_READ)) {
         bool e_old = isExecutableOld(pathname);
         uint32_t flash_target_offset = e_old ? (64ul << 10) : 0;
@@ -187,7 +191,9 @@ static bool __not_in_flash_func(flash_file)(const char pathname[256]) {
         }
         restore_interrupts(ints);
         multicore_lockout_end_blocking();
+        #ifdef PICO_DEFAULT_LED_PIN
         gpio_put(PICO_DEFAULT_LED_PIN, false);
+        #endif
         f_close(&file);
 
         if (f_open(&file, "/.firmware", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {

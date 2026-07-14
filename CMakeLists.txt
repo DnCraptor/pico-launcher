@@ -15,17 +15,25 @@ endif()
 set(PICO_BOARD pico2 CACHE STRING "Board type")
 
 cmake_minimum_required(VERSION 3.22)
+
+option(ZERO2 "Waveshare RP2350 Pi Zero" ON)
+
+if (ZERO2)
+    set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR}/src/boards)
+    set(PICO_BOARD waveshare_rp2350_pizero)
+    set(PICO_PLATFORM rp2350-arm-s)
+endif()
+
 include(pico_sdk_import.cmake)
 
 project(launcher C CXX ASM)
 pico_sdk_init()
 
-option(M2 "Murmulator 2.0" ON)
-
-option(VGA "Enable VGA" ON)
+option(M2 "Murmulator 2.0" OFF)
+option(VGA "Enable VGA" OFF)
 option(TFT "Enable TFT display" OFF)
 option(ILI9341 "Enable TFT ILI9341 display" OFF)
-option(HDMI "Enable HDMI display" OFF)
+option(HDMI "Enable HDMI display" ON)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
 
@@ -39,7 +47,9 @@ if(NOT LAUNCHER_VERSION)
 set(LAUNCHER_VERSION 4)
 endif ()
 
-if (M2)
+if (ZERO2)
+    SET(BUILD_NAME "z0p2-uf2-${PROJECT_NAME}")
+elseif (M2)
     SET(BUILD_NAME "m2p2-uf2-${PROJECT_NAME}")
 else()
     SET(BUILD_NAME "m1p2-uf2-${PROJECT_NAME}")
@@ -126,7 +136,44 @@ target_compile_options(${PROJECT_NAME} PUBLIC
 )
 endif ()
 
-if (M2)
+if (ZERO2)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        ZERO2=1
+        PICO_FLASH_SIZE_BYTES=16777216
+
+        # VGA 8 pins starts from pin:
+        VGA_BASE_PIN=32
+
+        # HDMI 8 pins starts from pin:
+        HDMI_BASE_PIN=32
+
+        # TFT
+        TFT_CS_PIN=12
+        TFT_RST_PIN=14
+        TFT_LED_PIN=15
+        TFT_DC_PIN=16
+        TFT_DATA_PIN=18
+        TFT_CLK_PIN=19
+
+        # SDCARD
+        SDCARD_SPI_BUS=spi1
+        SDCARD_PIN_SPI0_SCK=30
+        SDCARD_PIN_SPI0_MOSI=31
+        SDCARD_PIN_SPI0_MISO=40
+        SDCARD_PIN_SPI0_CS=43
+
+        # PS2 keyboard
+        KBD_CLOCK_PIN=2
+        KBD_DATA_PIN=3
+
+        # NES Gamepad
+        NES_GPIO_CLK=4
+        NES_GPIO_LAT=5
+        NES_GPIO_DATA=7
+
+        DEP_EXT="z0p2"
+    )
+elseif (M2)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         PICO_FLASH_SIZE_BYTES=16777216
 
