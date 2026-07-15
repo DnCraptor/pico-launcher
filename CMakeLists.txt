@@ -16,7 +16,7 @@ set(PICO_BOARD pico2 CACHE STRING "Board type")
 
 cmake_minimum_required(VERSION 3.22)
 
-option(ZERO2 "Waveshare RP2350 Pi Zero" ON)
+option(ZERO2 "Waveshare RP2350 Pi Zero" OFF)
 
 if (ZERO2)
     set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR}/src/boards)
@@ -29,14 +29,14 @@ include(pico_sdk_import.cmake)
 project(launcher C CXX ASM)
 pico_sdk_init()
 
-option(M2 "Murmulator 2.0" OFF)
+option(M2 "Murmulator 2.0" ON)
 option(VGA "Enable VGA" OFF)
 option(TFT "Enable TFT display" OFF)
 option(ILI9341 "Enable TFT ILI9341 display" OFF)
 option(HDMI "Enable HDMI display" ON)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
-option(HID "Enable USB HID host (USB drive mode is unavailable)" ON)
+option(HID "Enable USB HID host (USB drive mode is unavailable)" OFF)
 
 option(FLASH_SIZE "Target Flash Size" 4096)
 

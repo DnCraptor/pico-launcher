@@ -10,8 +10,11 @@
 #include <pico/stdlib.h>
 
 #include "graphics.h"
+#include "ui/ui_footer.h"
+#include "ui/ui_widgets.h"
 
 extern "C" {
+#include "ui/ui_input.h"
 #include "ps2.h"
 #include "usb.h"
 }
@@ -52,6 +55,7 @@ bool __time_critical_func(handleScancode)(const uint32_t ps2scancode) {
     if (!ps2scancode)
         return true;
 
+    ui_input_handle_scancode(ps2scancode);
     // ps2kbd reports XT set-1 make/break codes. Extended keys keep the E0
     // prefix in the upper byte (E050/E0D0), while the launcher uses only the
     // normalized low-byte code (50). Keep input as the current key state:
@@ -59,6 +63,8 @@ bool __time_critical_func(handleScancode)(const uint32_t ps2scancode) {
     const uint8_t raw_scancode = (uint8_t)ps2scancode;
     const uint8_t scancode = raw_scancode & 0x7F;
 
+    // Keep the launcher's existing held-key model while the viewer/editor use
+    // the event queue. Clear only the release of the currently active key.
     if (raw_scancode & 0x80) {
         if (input == scancode)
             input = 0;
@@ -295,18 +301,21 @@ void __not_in_flash_func(filebrowser)() {
         int total_files = 0;
 
         snprintf(tmp, TEXTMODE_COLS, "SD:\\%s", basepath);
-        draw_window(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
+        ui_draw_box(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
         memset(tmp, ' ', TEXTMODE_COLS);
 
-        draw_text(tmp, 0, 29, 0, 0);
-        auto off = 0;
-        draw_text("START", off, 29, 7, 0);
-        off += 5;
-        draw_text(" Run at cursor ", off, 29, 0, 3);
-        off += 16;
-        draw_text("A/F10", off, 29, 7, 0);
-        off += 5;
-        draw_text(" USB DRV ", off, 29, 0, 3);
+        static const ui_footer_item_t footer_left[] = {
+            {"Ent", "Run "},
+        };
+#ifndef HID
+        static const ui_footer_item_t footer_right[] = {
+            {"F10", "USB "},
+        };
+        ui_footer_draw(footer_left, sizeof(footer_left) / sizeof(footer_left[0]),
+                       footer_right, sizeof(footer_right) / sizeof(footer_right[0]));
+#else
+        ui_footer_draw(footer_left, sizeof(footer_left) / sizeof(footer_left[0]), NULL, 0);
+#endif
 
         if (FR_OK != f_opendir(&dir, basepath)) {
             draw_text("Failed to open directory", 1, 2, 4, 0);
@@ -366,13 +375,12 @@ void __not_in_flash_func(filebrowser)() {
                 return;
             }
 
-            // F10
+#ifndef HID
+            // F10 / gamepad A: expose the SD card as a USB MSC device.
             if (nespad_state & DPAD_A || input == 0x44) {
-                constexpr int window_x = (TEXTMODE_COLS - 40) / 2;
-                constexpr int window_y = (TEXTMODE_ROWS - 4) / 2;
-                draw_window("SD Cardreader mode ", window_x, window_y, 40, 4);
-                draw_text("Mounting SD Card. Use safe eject ", window_x + 1, window_y + 1, 13, 1);
-                draw_text("to conitinue...", window_x + 1, window_y + 2, 13, 1);
+                ui_message_box("SD Cardreader mode",
+                               "Mounting SD Card. Use safe eject",
+                               "to continue...", 40, 13, 1);
 
                 sleep_ms(500);
 
@@ -382,14 +390,15 @@ void __not_in_flash_func(filebrowser)() {
                     pico_usb_drive_heartbeat();
                 }
 
-                int post_cicles = 1000;
-                while (--post_cicles) {
+                int post_cycles = 1000;
+                while (--post_cycles) {
                     sleep_ms(1);
                     pico_usb_drive_heartbeat();
                 }
                 debounce = true;
                 break;
             }
+#endif
 
             if (nespad_state & DPAD_DOWN || input == 0x50) {
                 if (offset + (current_item + 1) < total_files) {
@@ -520,12 +529,9 @@ void __not_in_flash_func(filebrowser)() {
                 if (i == current_item) {
                     color = 0;
                     bg_color = 3;
-                    memset(tmp, 0xCD, TEXTMODE_COLS - 2);
-                    tmp[TEXTMODE_COLS - 2] = '\0';
-                    draw_text(tmp, 1, per_page + 1, 11, 1);
-                    snprintf(tmp, TEXTMODE_COLS - 2, " Size: %iKb, File %lu of %i ", item.size / 1024, offset + i + 1,
-                             total_files);
-                    draw_text(tmp, 2, per_page + 1, 14, 3);
+                    snprintf(tmp, TEXTMODE_COLS, " Size: %iKb, File %lu of %i ",
+                             item.size / 1024, offset + i + 1, total_files);
+                    ui_status_draw(tmp, 14, 3);
                 }
 
                 const auto len = strlen(item.filename);
