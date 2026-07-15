@@ -34,6 +34,7 @@ typedef struct editor_state {
     uint32_t cursor_column;
     uint32_t top_line;
     uint32_t left_column;
+    bool overwrite_mode;
 } editor_state_t;
 
 static void editor_input_task(void) {
@@ -207,7 +208,7 @@ static void draw_editor(const editor_document_t *document, const editor_state_t 
             line_character_at(document, state->cursor_line, state->cursor_column),
             '\0'
         };
-        draw_text(cursor, cursor_x, cursor_y, 0, 3);
+        draw_text(cursor, cursor_x, cursor_y, 0, 7);
     }
 
     char status[TEXTMODE_COLS + 1u];
@@ -216,6 +217,8 @@ static void draw_editor(const editor_document_t *document, const editor_state_t 
              (unsigned long)document->line_count,
              (unsigned long)(state->cursor_column + 1u));
     ui_status_draw(status, 11, 1);
+    draw_text(state->overwrite_mode ? "OVR" : "INS",
+              TEXTMODE_COLS - 4u, EDITOR_STATUS_ROW, 15, 1);
 
     static const ui_footer_item_t footer[] = {
         {"F10/Esc", "Exit"},
@@ -256,7 +259,17 @@ bool file_editor_run(const char *path) {
                 break;
             }
 
-            if (scancode_is(event.scancode, 0x0048, 0xE048)) {
+            if (event.scancode == 0x0052 || event.scancode == 0xE052) {
+                state.overwrite_mode = !state.overwrite_mode;
+            } else if ((event.modifiers & UI_MOD_CTRL) &&
+                       scancode_is(event.scancode, 0x0047, 0xE047)) {
+                state.cursor_line = 0;
+                state.cursor_column = 0;
+            } else if ((event.modifiers & UI_MOD_CTRL) &&
+                       scancode_is(event.scancode, 0x004F, 0xE04F)) {
+                state.cursor_line = document.line_count - 1u;
+                state.cursor_column = line_visual_length(&document, state.cursor_line);
+            } else if (scancode_is(event.scancode, 0x0048, 0xE048)) {
                 if (state.cursor_line > 0)
                     --state.cursor_line;
             } else if (scancode_is(event.scancode, 0x0050, 0xE050)) {
