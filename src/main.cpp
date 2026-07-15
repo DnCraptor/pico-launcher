@@ -645,11 +645,7 @@ void __not_in_flash_func(filebrowser)() {
                     pico_usb_drive_heartbeat();
                 }
 
-                int post_cycles = 1000;
-                while (--post_cycles) {
-                    sleep_ms(1);
-                    pico_usb_drive_heartbeat();
-                }
+                pico_usb_drive_finish_eject();
                 debounce = true;
                 break;
             }

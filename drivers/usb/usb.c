@@ -47,6 +47,7 @@ enum  {
 };
 
 static uint32_t blink_interval_ms = BLINK_NOT_MOUNTED;
+static bool usb_stack_initialized = false;
 
 void led_blinking_task(void);
 void cdc_task(void);
@@ -54,11 +55,19 @@ void cdc_task(void);
 /*------------- MAIN -------------*/
 inline void init_pico_usb_drive() {
     set_tud_msc_ejected(false);
-    board_init();
-    // init device stack on configured roothub port
-    tud_init(BOARD_TUD_RHPORT);
-    if (board_init_after_tusb) {
-       board_init_after_tusb();
+
+    if (!usb_stack_initialized) {
+        board_init();
+        // Initialize the device stack only once. Re-entering USB-drive mode
+        // later is a logical reconnect, not a second initialization.
+        tud_init(BOARD_TUD_RHPORT);
+        if (board_init_after_tusb) {
+            board_init_after_tusb();
+        }
+        usb_stack_initialized = true;
+    } else {
+        // Re-enable the D+/D- pull-up so the host enumerates us again.
+        tud_connect();
     }
 }
 
@@ -66,6 +75,31 @@ inline void pico_usb_drive_heartbeat() {
     tud_task(); // tinyusb device task
     led_blinking_task();
     cdc_task();
+}
+ 
+void pico_usb_drive_finish_eject() {
+    // START STOP UNIT is acknowledged asynchronously by TinyUSB. Do not
+    // disconnect from inside tud_msc_start_stop_cb(), and do not stop calling
+    // tud_task() immediately: the host must first receive the successful CSW.
+    const uint32_t status_deadline = board_millis() + 250u;
+    while ((int32_t)(board_millis() - status_deadline) < 0) {
+        pico_usb_drive_heartbeat();
+        sleep_ms(1);
+    }
+
+    // A safe-eject command unloads the medium, but it does not electrically
+    // detach the USB device. Disable the pull-up so the PC observes a real
+    // disconnect and a later tud_connect() can enumerate the drive again.
+    tud_disconnect();
+
+    const uint32_t disconnect_deadline = board_millis() + 20u;
+    while ((int32_t)(board_millis() - disconnect_deadline) < 0) {
+        tud_task();
+        sleep_ms(1);
+    }
+
+    board_led_write(false);
+    blink_interval_ms = BLINK_NOT_MOUNTED;
 }
 
 void in_flash_drive() {
@@ -108,7 +142,9 @@ void tud_resume_cb(void) {
 
 // Invoked to determine max LUN
 uint8_t tud_msc_get_maxlun_cb(void) {
-  return 1;
+  // TinyUSB expects the highest LUN index, not the LUN count.
+  // This firmware exports one disk only, so the only valid LUN is 0.
+  return 0;
 }
 
 //--------------------------------------------------------------------+
