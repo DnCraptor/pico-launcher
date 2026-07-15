@@ -30,6 +30,8 @@ typedef struct ui_key_event {
 void ui_input_handle_scancode(uint32_t raw_scancode);
 bool ui_input_poll(ui_key_event_t *event);
 void ui_input_flush(void);
+void ui_input_set_blocked(bool blocked);
+bool ui_input_is_blocked(void);
 bool ui_input_key_down(uint16_t scancode);
 uint8_t ui_input_modifiers(void);
 

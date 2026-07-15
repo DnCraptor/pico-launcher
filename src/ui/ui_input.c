@@ -16,6 +16,7 @@ static volatile uint8_t queue_head;
 static volatile uint8_t queue_tail;
 static uint8_t key_state[64];
 static uint8_t modifiers;
+static volatile bool input_blocked;
 
 static uint16_t normalize_scancode(uint32_t raw_scancode) {
     const uint16_t code = (uint16_t)(raw_scancode & 0xFFFFu);
@@ -113,6 +114,9 @@ void ui_input_handle_scancode(uint32_t raw_scancode) {
     if (!raw_scancode)
         return;
 
+    if (input_blocked)
+        return;
+
     const bool pressed = ((uint8_t)raw_scancode & 0x80u) == 0;
     const uint16_t scancode = normalize_scancode(raw_scancode);
     const bool was_down = get_key_state(scancode);
@@ -147,6 +151,22 @@ void ui_input_flush(void) {
     const uint32_t irq_state = save_and_disable_interrupts();
     queue_tail = queue_head;
     restore_interrupts(irq_state);
+}
+
+void ui_input_set_blocked(bool blocked) {
+    const uint32_t irq_state = save_and_disable_interrupts();
+    input_blocked = blocked;
+    queue_tail = queue_head;
+    memset(key_state, 0, sizeof(key_state));
+    modifiers = 0;
+    restore_interrupts(irq_state);
+}
+
+bool ui_input_is_blocked(void) {
+    const uint32_t irq_state = save_and_disable_interrupts();
+    const bool blocked = input_blocked;
+    restore_interrupts(irq_state);
+    return blocked;
 }
 
 bool ui_input_key_down(uint16_t scancode) {

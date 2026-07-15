@@ -11,6 +11,7 @@
 
 #include "graphics.h"
 #include "ui/ui_footer.h"
+#include "ui/ui_disk_guard.h"
 #include "ui/ui_widgets.h"
 #include "tools/file_viewer.h"
 #include "tools/file_editor.h"
@@ -58,6 +59,10 @@ bool __time_critical_func(handleScancode)(const uint32_t ps2scancode) {
         return true;
 
     ui_input_handle_scancode(ps2scancode);
+    if (ui_input_is_blocked()) {
+        input = 0;
+        return true;
+    }
     // ps2kbd reports XT set-1 make/break codes. Extended keys keep the E0
     // prefix in the upper byte (E050/E0D0), while the launcher uses only the
     // normalized low-byte code (50). Keep input as the current key state:
@@ -166,10 +171,6 @@ static inline bool isExecutableOld(const char pathname[256]) {
 
 static bool __not_in_flash_func(flash_file)(const char pathname[256]) {
     FIL file;
-    #ifdef PICO_DEFAULT_LED_PIN
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-    #endif
     if (FR_OK == f_open(&file, pathname, FA_READ)) {
         bool e_old = isExecutableOld(pathname);
         uint32_t flash_target_offset = e_old ? (64ul << 10) : 0;
@@ -253,6 +254,45 @@ typedef struct __attribute__((__packed__)) {
 constexpr int max_files = 2500;
 static file_item_t fileItems[max_files];
 
+static FRESULT browser_delete_tree(const char *path, bool is_directory) {
+    if (!is_directory)
+        return f_unlink(path);
+
+    DIR directory;
+    FRESULT result = f_opendir(&directory, path);
+    if (result != FR_OK)
+        return result;
+
+    FILINFO info;
+    while (true) {
+        result = f_readdir(&directory, &info);
+        if (result != FR_OK || info.fname[0] == '\0')
+            break;
+
+        if (strcmp(info.fname, ".") == 0 || strcmp(info.fname, "..") == 0)
+            continue;
+
+        char child_path[256];
+        const int written = snprintf(child_path, sizeof(child_path), "%s\\%s", path, info.fname);
+        if (written < 0 || (size_t)written >= sizeof(child_path)) {
+            result = FR_INVALID_NAME;
+            break;
+        }
+
+        result = browser_delete_tree(child_path, (info.fattrib & AM_DIR) != 0);
+        if (result != FR_OK)
+            break;
+    }
+
+    const FRESULT close_result = f_closedir(&directory);
+    if (result != FR_OK)
+        return result;
+    if (close_result != FR_OK)
+        return close_result;
+
+    return f_rmdir(path);
+}
+
 static bool build_path(char *destination, size_t destination_size,
                        const char *basepath, const char *filename) {
     if (!destination || destination_size == 0 || !basepath || !filename)
@@ -268,6 +308,7 @@ static void draw_filebrowser_chrome(const char *basepath, char *title, size_t ti
 
     static const ui_footer_item_t footer_left[] = {
         {"Enter/START", "Run "},
+        {"F1", "Help "},
         {"F3", "View "},
         {"F4", "Edit "},
         {"F8", "Del "},
@@ -295,6 +336,101 @@ int compareFileItems(const void* a, const void* b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
+static void browser_help(void) {
+    // Fixed for the smallest supported text mode (53x30), but centred in
+    // wider modes such as 80 columns.
+    const uint32_t width = 51u;
+    const uint32_t height = 26u;
+    const uint32_t x = (TEXTMODE_COLS - width) / 2u;
+    const uint32_t y = (TEXTMODE_ROWS - height) / 2u;
+
+    ui_input_flush();
+    input = 0;
+    ui_draw_box("Help", x, y, width, height);
+
+    // The interior is 49 columns by 24 rows. Keep every line within that
+    // limit so nothing can overwrite the right border in 53-column mode.
+    static const char *const lines[] = {
+        "Browser",
+        "Enter/START  Open dir, run UF2, or view file",
+        "F1           Help",
+        "F3           View selected file",
+        "F4           Edit selected file",
+        "F8/Delete    Delete file or directory tree",
+        "Arrows       Move selection",
+        "PgUp/PgDn    Move by half page",
+        "Home/End     First/last item",
+#ifndef HID
+        "F10/A        SD-card as USB-drive for your PC",
+#endif
+        "Esc/B        Leave launcher",
+        "",
+        "Viewer",
+        "Arrows/PgUp/PgDn/Home/End  Navigate",
+        "Esc/F10      Return to browser",
+        "",
+        "Editor",
+        "F2           Save",
+        "Ins          Toggle INS/OVR",
+        "Ctrl+Home/End  Start/end of document",
+        "Esc/F10      Exit (asks if modified)",
+        "",
+        "Esc/F1/F10/Enter closes this help"
+    };
+
+    const uint32_t max_rows = height - 2u;
+    const uint32_t line_count = sizeof(lines) / sizeof(lines[0]);
+    for (uint32_t i = 0; i < line_count && i < max_rows; ++i)
+        draw_text(lines[i], x + 1u, y + 1u + i, 15, 1);
+
+    while (true) {
+#ifdef HID
+        keyboard_task();
+#endif
+        ui_key_event_t event;
+        while (ui_input_poll(&event)) {
+            if (event.type != UI_KEY_PRESS)
+                continue;
+            if (event.scancode == 0x0001 || event.scancode == 0x003B ||
+                event.scancode == 0x0044 || event.scancode == 0x001C) {
+                ui_input_flush();
+                input = 0;
+                return;
+            }
+        }
+        sleep_ms(1);
+    }
+}
+
+static bool browser_confirm(const char *title, const char *line1, const char *line2) {
+    ui_input_flush();
+    input = 0;
+    ui_message_box(title, line1, line2, 44, 15, 1);
+
+    while (true) {
+#ifdef HID
+        keyboard_task();
+#endif
+        ui_key_event_t event;
+        while (ui_input_poll(&event)) {
+            if (event.type != UI_KEY_PRESS)
+                continue;
+
+            if (event.scancode == 0x001C || event.character == 'y' || event.character == 'Y') {
+                ui_input_flush();
+                input = 0;
+                return true;
+            }
+            if (event.scancode == 0x0001 || event.character == 'n' || event.character == 'N') {
+                ui_input_flush();
+                input = 0;
+                return false;
+            }
+        }
+        sleep_ms(1);
+    }
+}
+
 static inline bool isExecutable(const char pathname[256]) {
     const char* extension = strrchr(pathname, '.');
     if (extension == nullptr) {
@@ -314,6 +450,10 @@ static inline bool isExecutable(const char pathname[256]) {
 }
 
 void __not_in_flash_func(filebrowser)() {
+    #ifdef PICO_DEFAULT_LED_PIN
+    gpio_init(PICO_DEFAULT_LED_PIN);
+    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+    #endif
     bool debounce = true;
     static char basepath[256] = "";
     static char tmp[TEXTMODE_COLS + 1];
@@ -384,16 +524,28 @@ void __not_in_flash_func(filebrowser)() {
             sleep_ms(99);
 #endif
 
+            bool help_requested = false;
             bool view_requested = false;
             bool edit_requested = false;
+            bool delete_requested = false;
             ui_key_event_t ui_event;
             while (ui_input_poll(&ui_event)) {
                 if (ui_event.type != UI_KEY_PRESS)
                     continue;
-                if (ui_event.scancode == 0x003D)
+                if (ui_event.scancode == 0x003B)
+                    help_requested = true;
+                else if (ui_event.scancode == 0x003D)
                     view_requested = true;
                 else if (ui_event.scancode == 0x003E)
                     edit_requested = true;
+                else if (ui_event.scancode == 0x0042 ||
+                         ui_event.scancode == 0x0053 || ui_event.scancode == 0xE053)
+                    delete_requested = true;
+            }
+
+            if (help_requested) {
+                browser_help();
+                draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
             }
 
             if (view_requested && total_files > 0) {
@@ -414,6 +566,57 @@ void __not_in_flash_func(filebrowser)() {
                     input = 0;
                     file_editor_run(tmp);
                     input = 0;
+                    draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
+                }
+            }
+
+            if (delete_requested && total_files > 0) {
+                const int selected = offset + current_item;
+                const auto file_at_cursor = fileItems[selected];
+
+                if (strcmp(file_at_cursor.filename, "..") != 0) {
+                    char prompt[TEXTMODE_COLS + 1u];
+                    snprintf(prompt, sizeof(prompt), "%s '%s'?",
+                             file_at_cursor.is_directory ? "Delete directory" : "Delete file",
+                             file_at_cursor.filename);
+
+                    const bool confirmed = browser_confirm(
+                        "Delete", prompt,
+                        file_at_cursor.is_directory
+                            ? "Enter/Y Delete directory tree  Esc/N Cancel"
+                            : "Enter/Y Delete file  Esc/N Cancel");
+
+                    if (confirmed && build_path(tmp, sizeof(tmp), basepath, file_at_cursor.filename)) {
+                        ui_disk_guard_begin(file_at_cursor.is_directory
+                                                ? "Deleting directory..."
+                                                : "Deleting file...");
+                        const FRESULT result = browser_delete_tree(tmp, file_at_cursor.is_directory);
+                        ui_disk_guard_end();
+                        if (result == FR_OK) {
+                            if (selected + 1 < total_files) {
+                                memmove(&fileItems[selected], &fileItems[selected + 1],
+                                        (size_t)(total_files - selected - 1) * sizeof(fileItems[0]));
+                            }
+                            --total_files;
+
+                            if (total_files == 0) {
+                                offset = 0;
+                                current_item = 0;
+                            } else {
+                                if (offset >= total_files)
+                                    offset = total_files - 1;
+                                if (offset + current_item >= total_files)
+                                    current_item = total_files - offset - 1;
+                            }
+                        } else {
+                            ui_message_box("Delete failed",
+                                           "Unable to delete selected object",
+                                           file_at_cursor.filename, 46, 12, 1);
+                            sleep_ms(1000);
+                        }
+                    }
+                    input = 0;
+                    ui_input_flush();
                     draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
                 }
             }

@@ -8,6 +8,7 @@
 #include "ff.h"
 #include "graphics.h"
 #include "pico/stdlib.h"
+#include "ui/ui_disk_guard.h"
 #include "ui/ui_footer.h"
 #include "ui/ui_input.h"
 #include "ui/ui_widgets.h"
@@ -25,8 +26,10 @@
 typedef struct editor_document {
     char *data;
     uint32_t size;
+    uint32_t capacity;
     uint32_t *line_offsets;
     uint32_t line_count;
+    bool modified;
 } editor_document_t;
 
 typedef struct editor_state {
@@ -42,6 +45,8 @@ static void editor_input_task(void) {
     keyboard_task();
 #endif
 }
+
+static bool document_rebuild_lines(editor_document_t *document);
 
 static void document_free(editor_document_t *document) {
     if (!document)
@@ -68,7 +73,8 @@ static bool document_load(editor_document_t *document, const char *path) {
     }
 
     document->size = (uint32_t)file_size;
-    document->data = (char *)malloc((size_t)document->size + 1u);
+    document->capacity = document->size + 1u;
+    document->data = (char *)malloc(document->capacity);
     if (!document->data) {
         f_close(&file);
         return false;
@@ -88,25 +94,79 @@ static bool document_load(editor_document_t *document, const char *path) {
     f_close(&file);
     document->data[document->size] = '\0';
 
-    uint32_t line_count = 1;
+    if (!document_rebuild_lines(document)) {
+        document_free(document);
+        return false;
+    }
+    return true;
+}
+
+static bool document_rebuild_lines(editor_document_t *document) {
+    uint32_t line_count = 1u;
     for (uint32_t i = 0; i < document->size; ++i) {
         if (document->data[i] == '\n')
             ++line_count;
     }
 
-    document->line_offsets = (uint32_t *)malloc((size_t)line_count * sizeof(document->line_offsets[0]));
-    if (!document->line_offsets) {
-        document_free(document);
+    uint32_t *offsets = (uint32_t *)realloc(
+        document->line_offsets, (size_t)line_count * sizeof(document->line_offsets[0]));
+    if (!offsets)
         return false;
-    }
 
+    document->line_offsets = offsets;
     document->line_offsets[0] = 0;
-    uint32_t line = 1;
+    uint32_t line = 1u;
     for (uint32_t i = 0; i < document->size; ++i) {
         if (document->data[i] == '\n' && line < line_count)
             document->line_offsets[line++] = i + 1u;
     }
     document->line_count = line_count;
+    return true;
+}
+
+static bool document_reserve(editor_document_t *document, uint32_t required_size) {
+    if (required_size + 1u <= document->capacity)
+        return true;
+
+    uint32_t capacity = document->capacity ? document->capacity : 64u;
+    while (capacity < required_size + 1u) {
+        const uint32_t grown = capacity + capacity / 2u + 64u;
+        if (grown <= capacity) {
+            capacity = required_size + 1u;
+            break;
+        }
+        capacity = grown;
+    }
+
+    char *data = (char *)realloc(document->data, capacity);
+    if (!data)
+        return false;
+    document->data = data;
+    document->capacity = capacity;
+    return true;
+}
+
+static bool document_replace_range(editor_document_t *document, uint32_t offset,
+                                   uint32_t remove_count, const char *insert,
+                                   uint32_t insert_count) {
+    if (offset > document->size || remove_count > document->size - offset)
+        return false;
+
+    const uint32_t new_size = document->size - remove_count + insert_count;
+    if (!document_reserve(document, new_size))
+        return false;
+
+    memmove(document->data + offset + insert_count,
+            document->data + offset + remove_count,
+            document->size - offset - remove_count);
+    if (insert_count)
+        memcpy(document->data + offset, insert, insert_count);
+
+    document->size = new_size;
+    document->data[new_size] = '\0';
+    if (!document_rebuild_lines(document))
+        return false;
+    document->modified = true;
     return true;
 }
 
@@ -131,6 +191,111 @@ static uint32_t line_visual_length(const editor_document_t *document, uint32_t l
             ++column;
     }
     return column;
+}
+
+static uint32_t line_offset_at_visual_column(const editor_document_t *document,
+                                             uint32_t line, uint32_t target_column) {
+    const uint32_t start = document->line_offsets[line];
+    const uint32_t end = line_end_offset(document, line);
+    uint32_t visual_column = 0;
+
+    for (uint32_t offset = start; offset < end; ++offset) {
+        const uint8_t ch = (uint8_t)document->data[offset];
+        const uint32_t width = ch == '\t'
+            ? EDITOR_TAB_SIZE - (visual_column % EDITOR_TAB_SIZE)
+            : 1u;
+        if (target_column < visual_column + width)
+            return offset;
+        visual_column += width;
+    }
+    return end;
+}
+
+static uint32_t line_visual_column_at_offset(const editor_document_t *document,
+                                             uint32_t line, uint32_t target_offset) {
+    const uint32_t start = document->line_offsets[line];
+    const uint32_t end = line_end_offset(document, line);
+    uint32_t visual_column = 0;
+    if (target_offset > end)
+        target_offset = end;
+
+    for (uint32_t offset = start; offset < target_offset; ++offset) {
+        if (document->data[offset] == '\t')
+            visual_column += EDITOR_TAB_SIZE - (visual_column % EDITOR_TAB_SIZE);
+        else
+            ++visual_column;
+    }
+    return visual_column;
+}
+
+static bool editor_insert_character(editor_document_t *document, editor_state_t *state,
+                                    char character) {
+    const uint32_t offset = line_offset_at_visual_column(
+        document, state->cursor_line, state->cursor_column);
+    const uint32_t end = line_end_offset(document, state->cursor_line);
+    uint32_t remove_count = 0;
+
+    if (state->overwrite_mode && offset < end)
+        remove_count = 1u;
+
+    if (!document_replace_range(document, offset, remove_count, &character, 1u))
+        return false;
+    ++state->cursor_column;
+    return true;
+}
+
+static bool editor_insert_newline(editor_document_t *document, editor_state_t *state) {
+    const uint32_t offset = line_offset_at_visual_column(
+        document, state->cursor_line, state->cursor_column);
+    const char newline = '\n';
+    if (!document_replace_range(document, offset, 0, &newline, 1u))
+        return false;
+    ++state->cursor_line;
+    state->cursor_column = 0;
+    return true;
+}
+
+static bool editor_backspace(editor_document_t *document, editor_state_t *state) {
+    const uint32_t line = state->cursor_line;
+    const uint32_t start = document->line_offsets[line];
+    const uint32_t offset = line_offset_at_visual_column(document, line, state->cursor_column);
+
+    if (offset > start) {
+        const uint32_t remove_offset = offset - 1u;
+        const uint32_t new_column = line_visual_column_at_offset(document, line, remove_offset);
+        if (!document_replace_range(document, remove_offset, 1u, NULL, 0))
+            return false;
+        state->cursor_column = new_column;
+        return true;
+    }
+
+    if (line == 0)
+        return true;
+
+    const uint32_t previous_line = line - 1u;
+    const uint32_t previous_end = line_end_offset(document, previous_line);
+    const uint32_t previous_column = line_visual_length(document, previous_line);
+    const uint32_t remove_count = start - previous_end;
+    if (!document_replace_range(document, previous_end, remove_count, NULL, 0))
+        return false;
+    state->cursor_line = previous_line;
+    state->cursor_column = previous_column;
+    return true;
+}
+
+static bool editor_delete(editor_document_t *document, editor_state_t *state) {
+    const uint32_t line = state->cursor_line;
+    const uint32_t offset = line_offset_at_visual_column(document, line, state->cursor_column);
+    const uint32_t end = line_end_offset(document, line);
+
+    if (offset < end)
+        return document_replace_range(document, offset, 1u, NULL, 0);
+
+    if (line + 1u >= document->line_count)
+        return true;
+
+    const uint32_t next_start = document->line_offsets[line + 1u];
+    return document_replace_range(document, end, next_start - end, NULL, 0);
 }
 
 static char line_character_at(const editor_document_t *document, uint32_t line, uint32_t target_column) {
@@ -212,18 +377,110 @@ static void draw_editor(const editor_document_t *document, const editor_state_t 
     }
 
     char status[TEXTMODE_COLS + 1u];
-    snprintf(status, sizeof(status), "Line: %lu/%lu  Col: %lu  Read only",
+    snprintf(status, sizeof(status), "Line: %lu/%lu  Col: %lu%s",
              (unsigned long)(state->cursor_line + 1u),
              (unsigned long)document->line_count,
-             (unsigned long)(state->cursor_column + 1u));
+             (unsigned long)(state->cursor_column + 1u),
+             document->modified ? "  Modified" : "");
     ui_status_draw(status, 11, 1);
     draw_text(state->overwrite_mode ? "OVR" : "INS",
               TEXTMODE_COLS - 4u, EDITOR_STATUS_ROW, 15, 1);
 
     static const ui_footer_item_t footer[] = {
+        {"F2", "Save "},
         {"F10/Esc", "Exit"},
     };
     ui_footer_draw(footer, sizeof(footer) / sizeof(footer[0]), NULL, 0);
+}
+
+
+static bool editor_confirm(const char *title, const char *message,
+                           const char *yes_label, const char *no_label) {
+    const uint32_t width = TEXTMODE_COLS < 53u ? TEXTMODE_COLS - 4u : 49u;
+    const uint32_t x = (TEXTMODE_COLS - width) / 2u;
+    const uint32_t y = (TEXTMODE_ROWS - 5u) / 2u;
+
+    ui_draw_box(title, x, y, width, 5u);
+    draw_text(message, x + 2u, y + 2u, 15, 1);
+
+    ui_footer_item_t footer[] = {
+        {"Enter/Y", yes_label},
+        {"Esc/N", no_label},
+    };
+    ui_footer_draw(footer, 2u, NULL, 0);
+
+    ui_input_flush();
+    for (;;) {
+        editor_input_task();
+        ui_key_event_t event;
+        while (ui_input_poll(&event)) {
+            if (event.type != UI_KEY_PRESS)
+                continue;
+            if (event.scancode == 0x001C || event.scancode == 0xE01C ||
+                event.scancode == 0x0015)
+                return true;
+            if (event.scancode == 0x0001 || event.scancode == 0x0031)
+                return false;
+        }
+        sleep_ms(1);
+    }
+}
+
+static bool editor_make_aux_path(const char *path, const char *suffix,
+                                 char *output, size_t output_size) {
+    const int written = snprintf(output, output_size, "%s%s", path, suffix);
+    return written > 0 && (size_t)written < output_size;
+}
+
+static bool document_save(editor_document_t *document, const char *path) {
+    char temporary[320];
+    char backup[320];
+    if (!editor_make_aux_path(path, ".tmp", temporary, sizeof(temporary)) ||
+        !editor_make_aux_path(path, ".bak", backup, sizeof(backup)))
+        return false;
+
+    f_unlink(temporary);
+    f_unlink(backup);
+
+    FIL file;
+    if (f_open(&file, temporary, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+        return false;
+
+    uint32_t offset = 0;
+    bool success = true;
+    while (offset < document->size) {
+        UINT written = 0;
+        const UINT chunk = (UINT)(document->size - offset);
+        if (f_write(&file, document->data + offset, chunk, &written) != FR_OK ||
+            written == 0) {
+            success = false;
+            break;
+        }
+        offset += written;
+    }
+    if (success && f_sync(&file) != FR_OK)
+        success = false;
+    if (f_close(&file) != FR_OK)
+        success = false;
+
+    if (!success) {
+        f_unlink(temporary);
+        return false;
+    }
+
+    if (f_rename(path, backup) != FR_OK) {
+        f_unlink(temporary);
+        return false;
+    }
+    if (f_rename(temporary, path) != FR_OK) {
+        f_rename(backup, path);
+        f_unlink(temporary);
+        return false;
+    }
+
+    f_unlink(backup);
+    document->modified = false;
+    return true;
 }
 
 static bool scancode_is(uint16_t scancode, uint16_t normalized, uint16_t extended) {
@@ -254,13 +511,58 @@ bool file_editor_run(const char *path) {
             if (event.type != UI_KEY_PRESS)
                 continue;
 
+            if (event.scancode == 0x003C) {
+                if (!document.modified ||
+                    editor_confirm("Save", "Write changes to file?", "Save ", "Cancel")) {
+                    if (document.modified) {
+                        ui_disk_guard_begin("Saving file...");
+                        const bool saved = document_save(&document, path);
+                        ui_disk_guard_end();
+                        if (!saved) {
+                            ui_message_box("Save error", "Unable to save file", path, 44, 12, 1);
+                            sleep_ms(1000);
+                        }
+                    }
+                }
+                redraw = true;
+                ui_input_flush();
+                break;
+            }
+
             if (event.scancode == 0x0001 || event.scancode == 0x0044) {
-                running = false;
+                if (!document.modified ||
+                    editor_confirm("Unsaved changes",
+                                   "Changes will be lost. Exit?",
+                                   "Discard ", "Cancel")) {
+                    running = false;
+                }
+                redraw = true;
+                ui_input_flush();
                 break;
             }
 
             if (event.scancode == 0x0052 || event.scancode == 0xE052) {
                 state.overwrite_mode = !state.overwrite_mode;
+            } else if (event.scancode == 0x001C || event.scancode == 0xE01C) {
+                if (!editor_insert_newline(&document, &state))
+                    running = false;
+            } else if (event.scancode == 0x000E) {
+                if (!editor_backspace(&document, &state))
+                    running = false;
+            } else if (event.scancode == 0x0053 || event.scancode == 0xE053) {
+                if (!editor_delete(&document, &state))
+                    running = false;
+            } else if (event.scancode == 0x000F) {
+                const char tab = '\t';
+                const uint32_t next_tab = EDITOR_TAB_SIZE -
+                    (state.cursor_column % EDITOR_TAB_SIZE);
+                if (!editor_insert_character(&document, &state, tab))
+                    running = false;
+                else
+                    state.cursor_column += next_tab - 1u;
+            } else if (event.character >= 32 && !(event.modifiers & UI_MOD_CTRL)) {
+                if (!editor_insert_character(&document, &state, event.character))
+                    running = false;
             } else if ((event.modifiers & UI_MOD_CTRL) &&
                        scancode_is(event.scancode, 0x0047, 0xE047)) {
                 state.cursor_line = 0;
