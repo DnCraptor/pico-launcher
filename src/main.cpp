@@ -305,11 +305,14 @@ void __not_in_flash_func(filebrowser)() {
         memset(tmp, ' ', TEXTMODE_COLS);
 
         static const ui_footer_item_t footer_left[] = {
-            {"Ent", "Run "},
+            {"Enter/START", "Run "},
+            {"F3", "View "},
+            {"F4", "Edit "},
+            {"F8", "Del "},
         };
 #ifndef HID
         static const ui_footer_item_t footer_right[] = {
-            {"F10", "USB "},
+            {"F10/A", "USB"},
         };
         ui_footer_draw(footer_left, sizeof(footer_left) / sizeof(footer_left[0]),
                        footer_right, sizeof(footer_right) / sizeof(footer_right[0]));
@@ -529,9 +532,9 @@ void __not_in_flash_func(filebrowser)() {
                 if (i == current_item) {
                     color = 0;
                     bg_color = 3;
-                    snprintf(tmp, TEXTMODE_COLS, " Size: %iKb, File %lu of %i ",
+                    snprintf(tmp, TEXTMODE_COLS, "Size: %iKb, File %lu of %i",
                              item.size / 1024, offset + i + 1, total_files);
-                    ui_status_draw(tmp, 14, 3);
+                    ui_status_draw(tmp, 11, 1);
                 }
 
                 const auto len = strlen(item.filename);

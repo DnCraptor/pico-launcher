@@ -88,9 +88,28 @@ void ui_draw_box(const char *title, uint32_t x, uint32_t y, uint32_t width, uint
 
 void ui_status_draw(const char *text, uint8_t color, uint8_t bgcolor) {
     const uint32_t y = TEXTMODE_ROWS - 2;
-    ui_fill_row(y, color, bgcolor);
-    if (text)
-        ui_draw_clipped_text(text, 1, y, TEXTMODE_COLS - 2, color, bgcolor);
+    if (TEXTMODE_COLS <= 2)
+        return;
+
+    // Columns 0 and TEXTMODE_COLS - 1 contain the bottom frame corners.
+    // Preserve them and redraw only the horizontal part between the corners.
+    char line[TEXTMODE_COLS - 1];
+    const size_t inner_width = TEXTMODE_COLS - 2;
+    memset(line, 0xCD, inner_width);
+    line[inner_width] = '\0';
+
+    if (text && *text && inner_width > 2) {
+        size_t text_len = strlen(text);
+        const size_t max_text_len = inner_width - 2;
+        if (text_len > max_text_len)
+            text_len = max_text_len;
+
+        line[0] = '[';
+        memcpy(line + 1, text, text_len);
+        line[1 + text_len] = ']';
+    }
+
+    draw_text(line, 1, y, color, bgcolor);
 }
 
 void ui_status_clear(void) {
