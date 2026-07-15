@@ -12,6 +12,7 @@
 #include "graphics.h"
 #include "ui/ui_footer.h"
 #include "ui/ui_widgets.h"
+#include "tools/file_viewer.h"
 
 extern "C" {
 #include "ui/ui_input.h"
@@ -251,6 +252,36 @@ typedef struct __attribute__((__packed__)) {
 constexpr int max_files = 2500;
 static file_item_t fileItems[max_files];
 
+static bool build_path(char *destination, size_t destination_size,
+                       const char *basepath, const char *filename) {
+    if (!destination || destination_size == 0 || !basepath || !filename)
+        return false;
+
+    const int length = snprintf(destination, destination_size, "%s\\%s", basepath, filename);
+    return length >= 0 && (size_t)length < destination_size;
+}
+
+static void draw_filebrowser_chrome(const char *basepath, char *title, size_t title_size) {
+    snprintf(title, title_size, "SD:\\%s", basepath);
+    ui_draw_box(title, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
+
+    static const ui_footer_item_t footer_left[] = {
+        {"Enter/START", "Run "},
+        {"F3", "View "},
+        {"F4", "Edit "},
+        {"F8", "Del "},
+    };
+#ifndef HID
+    static const ui_footer_item_t footer_right[] = {
+        {"F10/A", "USB"},
+    };
+    ui_footer_draw(footer_left, sizeof(footer_left) / sizeof(footer_left[0]),
+                   footer_right, sizeof(footer_right) / sizeof(footer_right[0]));
+#else
+    ui_footer_draw(footer_left, sizeof(footer_left) / sizeof(footer_left[0]), NULL, 0);
+#endif
+}
+
 int compareFileItems(const void* a, const void* b) {
     const auto* itemA = (file_item_t *)a;
     const auto* itemB = (file_item_t *)b;
@@ -300,25 +331,8 @@ void __not_in_flash_func(filebrowser)() {
         memset(fileItems, 0, sizeof(file_item_t) * max_files);
         int total_files = 0;
 
-        snprintf(tmp, TEXTMODE_COLS, "SD:\\%s", basepath);
-        ui_draw_box(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
+        draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
         memset(tmp, ' ', TEXTMODE_COLS);
-
-        static const ui_footer_item_t footer_left[] = {
-            {"Enter/START", "Run "},
-            {"F3", "View "},
-            {"F4", "Edit "},
-            {"F8", "Del "},
-        };
-#ifndef HID
-        static const ui_footer_item_t footer_right[] = {
-            {"F10/A", "USB"},
-        };
-        ui_footer_draw(footer_left, sizeof(footer_left) / sizeof(footer_left[0]),
-                       footer_right, sizeof(footer_right) / sizeof(footer_right[0]));
-#else
-        ui_footer_draw(footer_left, sizeof(footer_left) / sizeof(footer_left[0]), NULL, 0);
-#endif
 
         if (FR_OK != f_opendir(&dir, basepath)) {
             draw_text("Failed to open directory", 1, 2, 4, 0);
@@ -368,6 +382,24 @@ void __not_in_flash_func(filebrowser)() {
 #else
             sleep_ms(99);
 #endif
+
+            bool view_requested = false;
+            ui_key_event_t ui_event;
+            while (ui_input_poll(&ui_event)) {
+                if (ui_event.type == UI_KEY_PRESS && ui_event.scancode == 0x003D)
+                    view_requested = true;
+            }
+
+            if (view_requested && total_files > 0) {
+                const auto file_at_cursor = fileItems[offset + current_item];
+                if (!file_at_cursor.is_directory &&
+                    build_path(tmp, sizeof(tmp), basepath, file_at_cursor.filename)) {
+                    input = 0;
+                    file_viewer_run(tmp);
+                    input = 0;
+                    draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
+                }
+            }
 
             if (!debounce) {
                 debounce = !(nespad_state & DPAD_START) && input != 0x1C;
@@ -518,9 +550,18 @@ void __not_in_flash_func(filebrowser)() {
                     break;
                 }
 
-                if (file_at_cursor.is_executable) {
-                    sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
+                if (!build_path(tmp, sizeof(tmp), basepath, file_at_cursor.filename)) {
+                    ui_message_box("File", "Path is too long", file_at_cursor.filename, 42, 12, 1);
+                    sleep_ms(800);
+                    draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
+                } else if (file_at_cursor.is_executable) {
                     load_firmware(tmp);
+                } else {
+                    input = 0;
+                    file_viewer_run(tmp);
+                    input = 0;
+                    debounce = false;
+                    draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
                 }
             }
 
