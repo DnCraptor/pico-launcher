@@ -13,6 +13,7 @@
 #include "ui/ui_footer.h"
 #include "ui/ui_widgets.h"
 #include "tools/file_viewer.h"
+#include "tools/file_editor.h"
 
 extern "C" {
 #include "ui/ui_input.h"
@@ -384,10 +385,15 @@ void __not_in_flash_func(filebrowser)() {
 #endif
 
             bool view_requested = false;
+            bool edit_requested = false;
             ui_key_event_t ui_event;
             while (ui_input_poll(&ui_event)) {
-                if (ui_event.type == UI_KEY_PRESS && ui_event.scancode == 0x003D)
+                if (ui_event.type != UI_KEY_PRESS)
+                    continue;
+                if (ui_event.scancode == 0x003D)
                     view_requested = true;
+                else if (ui_event.scancode == 0x003E)
+                    edit_requested = true;
             }
 
             if (view_requested && total_files > 0) {
@@ -396,6 +402,17 @@ void __not_in_flash_func(filebrowser)() {
                     build_path(tmp, sizeof(tmp), basepath, file_at_cursor.filename)) {
                     input = 0;
                     file_viewer_run(tmp);
+                    input = 0;
+                    draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
+                }
+            }
+
+            if (edit_requested && total_files > 0) {
+                const auto file_at_cursor = fileItems[offset + current_item];
+                if (!file_at_cursor.is_directory &&
+                    build_path(tmp, sizeof(tmp), basepath, file_at_cursor.filename)) {
+                    input = 0;
+                    file_editor_run(tmp);
                     input = 0;
                     draw_filebrowser_chrome(basepath, tmp, sizeof(tmp));
                 }
