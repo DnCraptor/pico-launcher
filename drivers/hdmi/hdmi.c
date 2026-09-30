@@ -119,6 +119,10 @@ static uint64_t get_ser_diff_data(const uint16_t dataR, const uint16_t dataG, co
             bB ^= 0b11;
         }
         uint8_t d6;
+#if defined(PICO_PC)
+        // Olimex TMDS0/1/2: GP14/18/16, so ascending GPIO pairs are B/R/G.
+        d6 = (bG << 4) | (bR << 2) | (bB << 0);
+#else
         if (HDMI_PIN_RGB_notBGR) {
             d6 = (bR << 4) | (bG << 2) | (bB << 0);
         }
@@ -127,6 +131,7 @@ static uint64_t get_ser_diff_data(const uint16_t dataR, const uint16_t dataG, co
         }
 
 
+#endif
         out64 |= d6;
     }
     return out64;

@@ -17,6 +17,16 @@ set(PICO_BOARD pico2 CACHE STRING "Board type")
 cmake_minimum_required(VERSION 3.22)
 
 option(ZERO2 "Waveshare RP2350 Pi Zero" OFF)
+option(PICO_PC "Olimex RP2040-PICO-PC with Raspberry Pi Pico 2" ON)
+
+if (PICO_PC AND ZERO2)
+    message(FATAL_ERROR "PICO_PC and ZERO2 select different boards")
+endif()
+
+if (PICO_PC)
+    set(PICO_BOARD pico2)
+    set(PICO_PLATFORM rp2350-arm-s)
+endif()
 
 if (ZERO2)
     set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR}/src/boards)
@@ -36,7 +46,11 @@ option(ILI9341 "Enable TFT ILI9341 display" OFF)
 option(HDMI "Enable HDMI display" ON)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
-option(HID "Enable USB HID host (USB drive mode is unavailable)" OFF)
+option(HID "Enable USB HID host (USB drive mode is unavailable)" ${PICO_PC})
+
+if (PICO_PC AND (NOT HDMI OR VGA OR TFT OR TV OR SOFTTV))
+    message(FATAL_ERROR "PICO_PC uses the onboard HDMI/DVI output; enable HDMI and disable other video outputs")
+endif()
 
 option(FLASH_SIZE "Target Flash Size" 4096)
 
@@ -48,7 +62,9 @@ if(NOT LAUNCHER_VERSION)
 set(LAUNCHER_VERSION 4)
 endif ()
 
-if (ZERO2)
+if (PICO_PC)
+    SET(BUILD_NAME "PCp2-uf2-${PROJECT_NAME}")
+elseif (ZERO2)
     SET(BUILD_NAME "z0p2-uf2-${PROJECT_NAME}")
 elseif (M2)
     SET(BUILD_NAME "m2p2-uf2-${PROJECT_NAME}")
@@ -159,7 +175,32 @@ target_compile_options(${PROJECT_NAME} PUBLIC
 )
 endif ()
 
-if (ZERO2)
+if (PICO_PC)
+    # Pin mapping matches DnCraptor/murmulator-os2, PICO_PC configuration.
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        PICO_PC=1
+        PICO_FLASH_SIZE_BYTES=16777216
+
+        HDMI_BASE_PIN=12
+
+        SDCARD_SPI_BUS=spi0
+        SDCARD_PIN_SPI0_MISO=4
+        SDCARD_PIN_SPI0_SCK=6
+        SDCARD_PIN_SPI0_MOSI=7
+        SDCARD_PIN_SPI0_CS=22
+
+        # Optional external PS/2 keyboard
+        KBD_CLOCK_PIN=0
+        KBD_DATA_PIN=1
+
+        # Optional NES gamepads on UEXT1 (DATA2 = DATA + 1)
+        NES_GPIO_CLK=5
+        NES_GPIO_LAT=9
+        NES_GPIO_DATA=20
+
+        DEP_EXT="PCp2"
+    )
+elseif (ZERO2)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         ZERO2=1
         PICO_FLASH_SIZE_BYTES=16777216
